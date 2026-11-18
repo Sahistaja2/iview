@@ -1,0 +1,81 @@
+[package]
+name = "iview"
+version = "0.1.0"
+edition = "2024"
+description = "Fast picture viewer"
+
+[dependencies]
+eframe = "0.36.2"
+# Pildivormingud: JPEG, HEIC ja TIFF eelistatult Windowsi dekoodriga (`wic`);
+# läbipaistvusega vormingud ja varu `image`-iga.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "webp", "gif", "tiff", "ico", "tga", "pnm"] }
+# Vähendamine SIMD-iga (lahtipakkimine ekraani mõõtu, Ctrl+S Lanczos).
+fast_image_resize = "6.1.0"
+# Liikuva pildi korduste arv (image ei anna seda välja); samad versioonid,
+# mis image juba kasutab.
+gif = "0.14.2"
+image-webp = "0.2.4"
+# EXIF: pööre, riba, täisekraani tekst, Ctrl+S metaandmed.
+kamadak-exif = "0.6"
+# SVG vaatamiseks (sama versioon, mida egui ökosüsteem kasutab).
+resvg = { version = "0.45.1", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+chrono = "0.4.45"
+# Del → prügikasti.
+trash = "5.2.9"
+raw-window-handle = "0.6"
+# Ctrl+O failiaken.
+rfd = "0.17.2"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Console",
+    "Win32_System_DataExchange",
+    "Win32_System_IO",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# `implement`-makro (WIC-i failivoog) vajab seda nime all.
+windows-core = "0.62.2"
+# Graafikadraiveri soojendus käivitusel (wgpu on asünkroonne); eframe kaudu niikuinii puus.
+pollster = "1.0.1"
+
+[target."cfg(windows)".build-dependencies]
+winresource = "0.1"
+
+# Väljalase: kiireim kood (dekoodrid, vähendaja); käivitus ei kannata.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false
+
+# Arendusbuild: oma kood silutav, aga teegid (dekoodrid!) optimeeritud —
+# muidu on JPEG-i lahtipakkimine silumisbuildis kümme korda aeglasem ja
+# „kiirust" ei saa hinnata.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = false

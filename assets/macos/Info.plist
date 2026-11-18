@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  iview.app mall.
+  tools/macos-app.sh asendab @…@ väärtused.
+
+  CFBundleDocumentTypes: Finderi „Open With“ pakub iview'd piltidele.
+  LSHandlerRank Alternate: vaikimisi avajaks ei hakka iseenesest, kasutaja
+  valib selle (Get Info → Open with → Change All).
+
+  Usage-kirjeldused: ilma nendeta keelab macOS kaitstud kaustad (Töölaud,
+  Dokumendid, Allalaadimised, kettad, võrk) vaikselt — vaatur ei näeks
+  kausta teisi pilte.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleName</key>
+	<string>iview</string>
+	<key>CFBundleDisplayName</key>
+	<string>iview</string>
+	<key>CFBundleIdentifier</key>
+	<string>@BUNDLE_ID@</string>
+	<key>CFBundleExecutable</key>
+	<string>iview</string>
+	<key>CFBundleIconFile</key>
+	<string>iview</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.photography</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Image</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.image</string>
+				<string>public.jpeg</string>
+				<string>public.png</string>
+				<string>com.compuserve.gif</string>
+				<string>com.microsoft.bmp</string>
+				<string>org.webmproject.webp</string>
+				<string>public.tiff</string>
+				<string>public.heic</string>
+				<string>public.heif</string>
+				<string>public.avif</string>
+				<string>com.microsoft.ico</string>
+				<string>com.truevision.tga-image</string>
+				<string>public.svg-image</string>
+				<string>public.camera-raw-image</string>
+				<string>com.adobe.raw-image</string>
+				<string>com.canon.cr2-raw-image</string>
+				<string>com.canon.cr3-raw-image</string>
+				<string>com.nikon.raw-image</string>
+				<string>com.sony.arw-raw-image</string>
+				<string>com.olympus.or-raw-image</string>
+				<string>com.panasonic.rw2-raw-image</string>
+				<string>com.fuji.raw-image</string>
+				<string>com.pentax.raw-image</string>
+				<string>com.samsung.raw-image</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>iview shows the pictures in your Desktop folder.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>iview shows the pictures in your Documents folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>iview shows the pictures in your Downloads folder.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>iview shows the pictures on removable drives and memory cards.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>iview shows the pictures on network drives.</string>
+</dict>
+</plist>
