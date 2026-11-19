@@ -79,12 +79,15 @@ Every start's stages are logged in `startup.log` next to the settings; with `IVI
 
 | Key | Action |
 |---|---|
-| `←` `→`, `PgUp` `PgDn`, Space, `Backspace` | previous / next (when zoomed in, arrows pan the picture) |
+| `←` `→`, `PgUp` `PgDn`, Space, `Backspace` | previous / next (when the picture is larger than the window, arrows pan it) |
 | `Home` `End` | first / last |
 | wheel | previous / next (zoom, depending on settings); `Ctrl`+wheel does the other |
 | `+` `−` | zoom (steps or 10 / 25 %) |
-| `1`, `0` | 1:1, fit |
-| `F` | toggle between fit to screen and 100% zoom (on Windows, fit to screen also resizes the window to the current monitor's usable area) |
+| `1` or `Ctrl+H`, `0` | 1:1, fit (this picture only) |
+| `F` | window mode like IrfanView: toggle between *fit to screen* (picture fitted to the screen, small ones enlarged) and *picture 1:1* (window sized to the picture, no larger than the screen) |
+| `Shift+F` | window mode *shrink big to screen*: big pictures fitted to the screen, small ones at 1:1 |
+| `Shift+O` | window mode *picture 1:1* |
+| `Shift+W` | window mode off: the window keeps its size, the picture is fitted into it |
 | double-click, drag | fit ↔ 1:1, pan |
 | `Enter`, `F11` | full screen (text in a corner, template in settings); `Esc` back |
 | `R` `L` | rotate clockwise / counter-clockwise |
@@ -107,6 +110,8 @@ Changes (rotate, mirror, downsize) live only in the window. The file stays untou
 ## Settings
 
 `config.toml` is human-readable and holds the same content as the settings window (`P`). It lives in `%APPDATA%\iview\` on Windows and in `~/.config/iview/` on macOS and Linux. Settings are saved by comparing the whole configuration. The window position is stored in physical pixels and is restored correctly on a second monitor too.
+
+The window mode (`F`, `Shift+F`, `Shift+O`, `Shift+W`, or *Window size* in the settings) is remembered and applies to every picture you open, as IrfanView's display options do. The window gets the picture's size on the current monitor and is centred there; rotating or resizing the picture resizes the window too. A window you maximized yourself stays maximized when you change pictures, but pressing a window-mode key restores it. In full screen only the zoom follows the mode. Resizing the window is Windows-only for now.
 
 For testing: `IVIEW_CONFIG=<file>` gives a separate profile. It does not touch the user's settings or window and does not send files to the user's window (single process is per profile).
 

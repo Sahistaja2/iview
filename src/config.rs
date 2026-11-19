@@ -27,6 +27,19 @@ macro_rules! choice {
 
 choice!(/// Mis vaade pilt avanedes saab.
     OpenView { Fit, OneToOne, Last } default Fit);
+choice!(/// Aken pildi järgi (nagu IrfanView' „Display options"): kehtib igale
+    /// avatud pildile. F vahetab `ToScreen` ↔ `ImageSize`; Shift+F, Shift+O,
+    /// Shift+W valivad otse.
+    WindowFit {
+        /// Aken jääb, pilt mahutatakse aknasse (Shift+W).
+        Off,
+        /// Suur pilt vähendatakse ekraanile, väike 1:1; aken pildi mõõtu (Shift+F).
+        BigToScreen,
+        /// Pilt ekraanile (ka väike suuremaks); aken pildi mõõtu (F).
+        ToScreen,
+        /// Pilt 1:1, aken pildi mõõtu, kuni ekraan lubab (Shift+O, F).
+        ImageSize,
+    } default Off);
 choice!(/// Hiire ratas ilma Ctrl-ita.
     WheelMode { Pictures, Zoom } default Pictures);
 choice!(/// + − samm.
@@ -67,6 +80,7 @@ pub struct Config {
     pub sort: SortBy,
     // ---- vaatamine ----
     pub open_view: OpenView,
+    pub window_fit: WindowFit,
     pub wheel: WheelMode,
     pub zoom_step: ZoomStep,
     pub background: Background,
@@ -135,6 +149,7 @@ impl Default for Config {
             single_instance: true,
             sort: SortBy::default(),
             open_view: OpenView::default(),
+            window_fit: WindowFit::default(),
             wheel: WheelMode::default(),
             zoom_step: ZoomStep::default(),
             background: Background::default(),

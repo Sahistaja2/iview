@@ -6,7 +6,7 @@
 use eframe::egui::{self, FontId, Key, RichText};
 
 use crate::app::Palette;
-use crate::config::{AtEnd, Background, Config, Corner, Enlarge, FullText, OpenView, RawSource, SortBy, TextSize, Transparent, Unsaved, WheelMode, ZoomStep};
+use crate::config::{AtEnd, Background, Config, Corner, Enlarge, FullText, OpenView, RawSource, SortBy, TextSize, Transparent, Unsaved, WheelMode, WindowFit, ZoomStep};
 
 const PAGES: [&str; 7] = ["Opening", "Viewing", "Resizing", "Saving", "Files", "Moving around", "Full screen"];
 
@@ -207,6 +207,12 @@ fn page_viewing(ui: &mut egui::Ui, palette: &Palette, c: &mut Config) {
             c.open_view = OpenView::nth(i);
         }
     });
+    row(ui, palette, "Window size", |ui| {
+        if let Some(i) = choice(ui, &["Keep", "Shrink big to screen", "Fit to screen", "Picture 1:1"], c.window_fit.index()) {
+            c.window_fit = WindowFit::nth(i);
+        }
+    });
+    note(ui, palette, "follows each picture, like IrfanView: F, Shift+F, Shift+O, Shift+W");
     row(ui, palette, "Wheel", |ui| {
         if let Some(i) = choice(ui, &["Pictures", "Zoom"], c.wheel.index()) {
             c.wheel = WheelMode::nth(i);

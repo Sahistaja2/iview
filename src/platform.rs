@@ -253,8 +253,9 @@ pub fn screen_px(_at: Option<(i32, i32)>) -> Option<(u32, u32)> {
 }
 
 /// Mahutab akna praeguse ekraani tööalasse, arvestades aknaraami.
+/// Maksimeeritud aken taastatakse ainult `restore_maximized` korral.
 #[cfg(windows)]
-pub fn resize_to_work_area(window: isize, client_size: impl FnOnce(eframe::egui::Vec2) -> eframe::egui::Vec2) {
+pub fn resize_to_work_area(window: isize, restore_maximized: bool, client_size: impl FnOnce(eframe::egui::Vec2) -> eframe::egui::Vec2) {
     use eframe::egui::Vec2;
     use windows::Win32::Foundation::{HWND, RECT};
     use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
@@ -264,6 +265,10 @@ pub fn resize_to_work_area(window: isize, client_size: impl FnOnce(eframe::egui:
     let hwnd = HWND(window as _);
     // SAFETY: vaaturi aknakäepide ja õigesti algväärtustatud struktuurid.
     unsafe {
+        let maximized = IsZoomed(hwnd).as_bool();
+        if maximized && !restore_maximized {
+            return;
+        }
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
         if !GetMonitorInfoW(monitor, &mut info).as_bool() {
@@ -288,7 +293,7 @@ pub fn resize_to_work_area(window: isize, client_size: impl FnOnce(eframe::egui:
         let size = client_size(available).min(available);
         let w = size.x as i32 + frame_w;
         let h = size.y as i32 + frame_h;
-        if IsZoomed(hwnd).as_bool() {
+        if maximized {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         }
         let x = work.left + (work_w - w) / 2;
@@ -298,7 +303,7 @@ pub fn resize_to_work_area(window: isize, client_size: impl FnOnce(eframe::egui:
 }
 
 #[cfg(not(windows))]
-pub fn resize_to_work_area(_window: isize, _client_size: impl FnOnce(eframe::egui::Vec2) -> eframe::egui::Vec2) {}
+pub fn resize_to_work_area(_window: isize, _restore_maximized: bool, _client_size: impl FnOnce(eframe::egui::Vec2) -> eframe::egui::Vec2) {}
 
 /// Akna tavaasend (taastatud olekus) füüsilistes pikslites ja kas aken on
 /// maksimeeritud. Punktid ei sobi: eri skaalaga ekraanidel on igal ekraanil

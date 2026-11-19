@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Modifiers, Rect, Sense, Stroke, Vec2};
 
-use crate::config::{AtEnd, Background, Config, Enlarge, FullText, OpenView, Transparent, Unsaved, WheelMode, ZoomStep};
+use crate::config::{AtEnd, Background, Config, Enlarge, FullText, OpenView, Transparent, Unsaved, WheelMode, WindowFit, ZoomStep};
 use crate::folder::{self, Item};
 use crate::loader::Loader;
 use crate::save::{Edit, fit_dims};
@@ -150,7 +150,6 @@ enum Birth {
 #[derive(Default)]
 struct Out {
     close: bool,
-    fit_window: Option<(Vec2, Vec2)>,
     /// Enter: täisekraan sisse / välja.
     fullscreen: Option<bool>,
     /// Kausta lõpus järgmisse (`true`) või eelmisse kausta.
@@ -217,6 +216,12 @@ pub struct App {
     /// Akna käepide ja sünni järk.
     hwnd: Option<isize>,
     birth: Birth,
+    /// Aknarežiim on rakendatud sellele pildile selles mõõdus (pööre ja
+    /// vähendamine muudavad mõõtu) — uus pilt või mõõt rakendab uuesti.
+    fitted_for: Option<(PathBuf, Vec2, WindowFit)>,
+    /// Režiim valiti klahviga: maksimeeritud aken taastatakse (pildi
+    /// vahetusel jääb kasutaja maksimeeritud aken alles).
+    fit_force: bool,
     /// „Nagu eelmine": F-i olek eelmisel sulgemisel.
     last_title: String,
     /// Ajamõõt: pilt ekraanil (käivitus või pildi vahetus).
@@ -309,6 +314,8 @@ impl App {
             changed_at: now,
             hwnd: None,
             birth: Birth::Hidden,
+            fitted_for: None,
+            fit_force: false,
             last_title: String::new(),
             timing: start.path.filter(|_| crate::startup::timing_on()).map(|p| (now, p)),
             started: now,
@@ -897,6 +904,50 @@ impl App {
         }
     }
 
+    /// Aknarežiim klahvist: rakendub kohe ka praegusele pildile.
+    fn set_window_fit(&mut self, mode: WindowFit) {
+        self.cfg.window_fit = mode;
+        self.fitted_for = None;
+        self.fit_force = mode != WindowFit::Off;
+    }
+
+    /// Aknarežiim (IrfanView' „Display options"): igale uuele pildile (ja
+    /// uuele mõõdule pärast pööret) suurendus režiimi järgi ning aken pildi
+    /// mõõtu praeguse ekraani tööalas. Täisekraanil ainult suurendus.
+    fn apply_window_fit(&mut self, ctx: &egui::Context) {
+        let mode = self.cfg.window_fit;
+        if mode == WindowFit::Off || self.birth == Birth::Hidden {
+            return;
+        }
+        let ppp = ctx.pixels_per_point();
+        let (Some(path), Some(natural)) = (self.current_path(), self.natural_size(ppp)) else { return };
+        let key = (path, natural, mode);
+        if self.fitted_for.as_ref() == Some(&key) {
+            return;
+        }
+        // Täisekraanilt väljumine käib veel: aken taastaks vana mõõdu üle.
+        if !self.fullscreen && ctx.input(|i| i.viewport().fullscreen == Some(true)) {
+            ctx.request_repaint_after(Duration::from_millis(16));
+            return;
+        }
+        self.fitted_for = Some(key);
+        let force = std::mem::take(&mut self.fit_force);
+        self.pan = Vec2::ZERO;
+        (self.zoom, self.fill) = match mode {
+            WindowFit::ImageSize => (Some(1.0), false),
+            WindowFit::ToScreen => (None, true),
+            WindowFit::BigToScreen | WindowFit::Off => (None, false),
+        };
+        if self.fullscreen {
+            return;
+        }
+        let Some(window) = self.hwnd else { return };
+        let (_, area) = self.stage_rects(ctx);
+        let padding = ctx.content_rect().size() - area.size();
+        crate::platform::resize_to_work_area(window, force, |available| (fitted_window_size(mode, natural, padding, available / ppp) * ppp).ceil());
+        ctx.request_repaint();
+    }
+
     /// Akna sünd: esimesel kaadril (peidus) koht paika, kate peale ja
     /// nähtavaks; kate maha, kui pilt on joonistatud akna lõplikus mõõdus.
     fn birth(&mut self, ctx: &egui::Context, frame: &eframe::Frame, image_shown: bool) {
@@ -1037,18 +1088,11 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
             if !on {
                 self.esc_closes = false;
+                // Täisekraanilt tagasi: aken uuesti pildi järgi.
+                self.fitted_for = None;
             }
         }
-        if let Some((natural, padding)) = out.fit_window
-            && !self.fullscreen
-            && let Some(window) = self.hwnd
-        {
-            let ppp = ctx.pixels_per_point();
-            crate::platform::resize_to_work_area(window, |available| {
-                let target = fitted_window_size(natural, padding, available / ppp);
-                (target * ppp).ceil()
-            });
-        }
+        self.apply_window_fit(&ctx);
         if let Some(path) = out.edit_file
             && let Err(e) = crate::platform::edit(&path, &self.cfg.editor)
         {
@@ -1171,9 +1215,14 @@ impl App {
         if ctx.input(|i| i.pointer.delta() != Vec2::ZERO || i.pointer.any_down()) {
             self.pointer_moved = Instant::now();
         }
-        // Suurendatud: nooled nihutavad pilti noole suunas seni, kuni klahv
-        // all; pilti vahetavad siis PgUp/PgDn, tühik, Home/End.
-        if self.overlay.is_none() && self.zoom.is_some() {
+        let overflows = natural.is_some_and(|n| {
+            let shown = n * shown_scale;
+            shown.x > area.width() + 0.5 || shown.y > area.height() + 0.5
+        });
+        // Alast suurem pilt (nagu IrfanView): nooled nihutavad pilti noole
+        // suunas seni, kuni klahv all; pilti vahetavad siis PgUp/PgDn,
+        // tühik, Home/End. Aknasse mahtuval pildil vahetavad nooled pilti.
+        if self.overlay.is_none() && overflows {
             self.pan += arrow_pan(ctx);
         }
 
@@ -1242,24 +1291,26 @@ impl App {
                     self.zoom = Some(zoom_step(shown_scale, true, self.cfg.zoom_step));
                 } else if key(none, Key::Minus) {
                     self.zoom = Some(zoom_step(shown_scale, false, self.cfg.zoom_step));
-                } else if key(none, Key::Num1) {
+                } else if key(none, Key::Num1) || key(ctrl, Key::H) {
                     self.zoom = Some(1.0);
                 } else if key(none, Key::Num0) {
                     self.zoom = None;
                     self.fill = false;
                     self.pan = Vec2::ZERO;
+                } else if key(Modifiers::SHIFT, Key::F) {
+                    // Aknarežiimid nagu IrfanView. Shift-iga enne F-i: egui
+                    // `consume_key(NONE, F)` võtaks ka Shift+F.
+                    self.set_window_fit(WindowFit::BigToScreen);
+                } else if key(Modifiers::SHIFT, Key::O) {
+                    self.set_window_fit(WindowFit::ImageSize);
+                } else if key(Modifiers::SHIFT, Key::W) {
+                    self.set_window_fit(WindowFit::Off);
+                    self.zoom = None;
+                    self.fill = false;
+                    self.pan = Vec2::ZERO;
                 } else if key(none, Key::F) {
-                    if let Some(natural) = natural {
-                        self.pan = Vec2::ZERO;
-                        if self.zoom.is_none() && self.fill {
-                            self.zoom = Some(1.0);
-                            self.fill = false;
-                        } else {
-                            self.zoom = None;
-                            self.fill = true;
-                            out.fit_window = Some((natural, ctx.content_rect().size() - area.size()));
-                        }
-                    }
+                    // „Pilt ekraanile" ↔ „aken pildi järgi (1:1)".
+                    self.set_window_fit(if self.cfg.window_fit == WindowFit::ToScreen { WindowFit::ImageSize } else { WindowFit::ToScreen });
                 } else if key(ctrl, Key::O) {
                     out.open_dialog = true;
                 } else if key(none, Key::P) {
@@ -1347,10 +1398,6 @@ impl App {
                 }
             }
             (scroll, swipe, i.zoom_delta(), i.pointer.latest_pos())
-        });
-        let overflows = natural.is_some_and(|n| {
-            let shown = n * shown_scale;
-            shown.x > area.width() + 0.5 || shown.y > area.height() + 0.5
         });
         if overflows && self.overlay.is_none() {
             self.pan += swipe;
@@ -1947,8 +1994,15 @@ fn fit_scale(natural: Vec2, area: Vec2, enlarge: bool) -> f32 {
     if enlarge { s } else { s.min(1.0) }
 }
 
-fn fitted_window_size(natural: Vec2, padding: Vec2, available: Vec2) -> Vec2 {
-    let scale = fit_scale(natural, (available - padding).max(Vec2::ZERO), true);
+/// Akna sisemõõt aknarežiimis: pilt režiimi suuruses + ääred (riba,
+/// klahvirida), vähemalt miinimum, mitte üle ekraani tööala.
+fn fitted_window_size(mode: WindowFit, natural: Vec2, padding: Vec2, available: Vec2) -> Vec2 {
+    let room = (available - padding).max(Vec2::ZERO);
+    let scale = match mode {
+        WindowFit::ToScreen => fit_scale(natural, room, true),
+        WindowFit::BigToScreen => fit_scale(natural, room, false),
+        WindowFit::ImageSize | WindowFit::Off => 1.0,
+    };
     (natural * scale + padding).max(Vec2::from(MIN_WINDOW_SIZE)).min(available)
 }
 
@@ -2234,10 +2288,28 @@ mod tests {
     fn fitted_window_uses_the_limiting_screen_dimension() {
         let available = Vec2::new(1900.0, 1000.0);
         let padding = Vec2::new(24.0, 94.0);
-        let wide = fitted_window_size(Vec2::new(4000.0, 1000.0), padding, available);
-        let tall = fitted_window_size(Vec2::new(1000.0, 4000.0), padding, available);
+        let wide = fitted_window_size(WindowFit::ToScreen, Vec2::new(4000.0, 1000.0), padding, available);
+        let tall = fitted_window_size(WindowFit::ToScreen, Vec2::new(1000.0, 4000.0), padding, available);
         assert_eq!(wide, Vec2::new(1900.0, 563.0));
         assert_eq!(tall, Vec2::new(480.0, 1000.0));
+    }
+
+    /// Aknarežiimid nagu IrfanView: ekraanile (väike suuremaks), ainult suur
+    /// ekraanile (väike 1:1), aken pildi järgi 1:1 (ekraanist mitte suurem).
+    #[test]
+    fn window_fit_modes() {
+        let available = Vec2::new(1900.0, 1000.0);
+        let padding = Vec2::new(24.0, 94.0);
+        let small = Vec2::new(300.0, 200.0);
+        let medium = Vec2::new(800.0, 600.0);
+        let big = Vec2::new(4000.0, 1000.0);
+        let size = |mode, natural| fitted_window_size(mode, natural, padding, available);
+        assert!((size(WindowFit::ToScreen, small) - Vec2::new(1383.0, 1000.0)).length() < 0.01);
+        assert_eq!(size(WindowFit::BigToScreen, small), Vec2::from(MIN_WINDOW_SIZE));
+        assert_eq!(size(WindowFit::BigToScreen, medium), Vec2::new(824.0, 694.0));
+        assert_eq!(size(WindowFit::BigToScreen, big), size(WindowFit::ToScreen, big));
+        assert_eq!(size(WindowFit::ImageSize, medium), Vec2::new(824.0, 694.0));
+        assert_eq!(size(WindowFit::ImageSize, big), available);
     }
 
     /// Mahutamine: väiksemaks, mitte suuremaks (seadeta); + − liiguvad
