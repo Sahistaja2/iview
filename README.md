@@ -94,14 +94,16 @@ Every start's stages are logged in `startup.log` next to the settings; with `IVI
 | `H` `V` | mirror horizontally / vertically |
 | `Ctrl+R` | downsize: longer side (presets, ½); `Ctrl+Enter` applies |
 | `Ctrl+Z` | undo a change |
-| `Ctrl+S` | save a copy as JPEG (name from template, quality from the original, EXIF and colour profile kept, orientation reset, file time from the original) |
+| `S` or `Ctrl+S` | save a copy as JPEG (name from template, quality from the original, EXIF and colour profile kept, orientation reset, file time from the original) |
 | `Ctrl+C` | picture to the clipboard as shown; for an unchanged picture also the file itself |
 | `Ctrl+V` | clipboard picture into the list (in memory only, `Ctrl+S` saves it) |
 | `F2` | rename (sidecar files such as `.xmp` follow) |
 | `Del` | to the Recycle Bin (sidecar files follow) |
-| `F4` | editor (setting; empty = the Windows “Edit” action) |
-| `F5` | reload the file from disk |
-| `Ctrl+O`, drop on the window | open a file or folder |
+| `F4` or `Shift+1` | editor (setting; empty = the Windows “Edit” action) |
+| `F5` or `Shift+R` | reload the file from disk |
+| `G` | pause / resume an animated GIF or WebP |
+| `O` or `Ctrl+O`, drop on the window | open a file or folder |
+| `M` | minimize the window |
 | `P` | settings |
 | `Esc` | close |
 

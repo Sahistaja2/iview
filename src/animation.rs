@@ -105,6 +105,8 @@ pub struct Animation {
     total: Duration,
     plays: Option<u32>,
     start: Instant,
+    /// Peatatud (G): aeg seisab sellel hetkel.
+    paused_at: Option<Instant>,
 }
 
 impl Animation {
@@ -112,31 +114,44 @@ impl Animation {
         let Frames { images, plays } = frames;
         let total = images.iter().map(|(_, d)| *d).sum();
         let frames = images.into_iter().enumerate().map(|(i, (image, delay))| (ctx.load_texture(format!("{name}#{i}"), image, egui::TextureOptions::LINEAR), delay)).collect();
-        Self { frames, total, plays, start: Instant::now() }
+        Self { frames, total, plays, start: Instant::now(), paused_at: None }
     }
 
-    /// Algusest uuesti (pildile tagasi tulles).
+    /// Algusest uuesti (pildile tagasi tulles), peatus maha.
     pub fn restart(&mut self) {
         self.start = Instant::now();
+        self.paused_at = None;
+    }
+
+    /// Peata või jätka (G, nagu IrfanView): jätkates sealt, kus jäi.
+    pub fn toggle_pause(&mut self) {
+        match self.paused_at.take() {
+            Some(at) => self.start += at.elapsed(),
+            None => self.paused_at = Some(Instant::now()),
+        }
     }
 
     /// Praegune kaader; järgmine joonistus kaadri vahetuseks. Kordused
     /// läbi: viimane kaader jääb.
     pub fn frame(&self, ctx: &egui::Context) -> &egui::TextureHandle {
         let total = self.total.as_nanos().max(1);
-        let elapsed = self.start.elapsed().as_nanos();
+        let elapsed = self.paused_at.unwrap_or_else(Instant::now).duration_since(self.start).as_nanos();
         if self.plays.is_some_and(|n| elapsed >= total * u128::from(n)) {
             return &self.frames[self.frames.len() - 1].0;
         }
         let mut t = Duration::from_nanos((elapsed % total) as u64);
         for (texture, delay) in &self.frames {
             if t < *delay {
-                ctx.request_repaint_after(*delay - t);
+                if self.paused_at.is_none() {
+                    ctx.request_repaint_after(*delay - t);
+                }
                 return texture;
             }
             t -= *delay;
         }
-        ctx.request_repaint();
+        if self.paused_at.is_none() {
+            ctx.request_repaint();
+        }
         &self.frames[0].0
     }
 }
@@ -159,6 +174,24 @@ mod tests {
             let buffer = image::RgbaImage::from_pixel(8, 6, image::Rgba(*color));
             encoder.encode_frame(image::Frame::from_parts(buffer, 0, 0, image::Delay::from_numer_denom_ms(delay_ms, 1))).unwrap();
         }
+    }
+
+    /// G peatab: kaader ei vahetu; jätkates sealt, kus jäi.
+    #[test]
+    fn pause_holds_the_frame() {
+        let ctx = egui::Context::default();
+        // Teine kaader pikk: aeglane masin ei jõua tsükliga algusesse tagasi.
+        let frames = [([255, 0, 0, 255], 40), ([0, 0, 255, 255], 10_000)];
+        let images = frames.iter().map(|(c, ms)| (egui::ColorImage::from_rgba_unmultiplied([1, 1], c), Duration::from_millis(*ms))).collect();
+        let mut animation = Animation::new(&ctx, "katse", Frames { images, plays: None });
+        animation.toggle_pause();
+        let held = animation.frame(&ctx).id();
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(animation.frame(&ctx).id(), held);
+        animation.toggle_pause();
+        assert_eq!(animation.frame(&ctx).id(), held, "jätkab samast kaadrist");
+        std::thread::sleep(Duration::from_millis(50));
+        assert_ne!(animation.frame(&ctx).id(), held);
     }
 
     /// Mitme kaadriga GIF annab kaadrid ja kestused (0 ms → 100 ms nagu

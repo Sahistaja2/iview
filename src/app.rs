@@ -1195,6 +1195,8 @@ impl App {
         }
         let none = Modifiers::NONE;
         let ctrl = Modifiers::COMMAND;
+        // `consume_key` ei vaata Shift-i, kui mustris seda pole.
+        let shift = ctx.input(|i| i.modifiers.shift);
         let key = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
         let before = self.cursor;
         let last = self.items.len().saturating_sub(1);
@@ -1291,7 +1293,8 @@ impl App {
                     self.zoom = Some(zoom_step(shown_scale, true, self.cfg.zoom_step));
                 } else if key(none, Key::Minus) {
                     self.zoom = Some(zoom_step(shown_scale, false, self.cfg.zoom_step));
-                } else if key(none, Key::Num1) || key(ctrl, Key::H) {
+                } else if (!shift && key(none, Key::Num1)) || key(ctrl, Key::H) {
+                    // Shift+1 on välise programmi klahv (allpool).
                     self.zoom = Some(1.0);
                 } else if key(none, Key::Num0) {
                     self.zoom = None;
@@ -1311,8 +1314,12 @@ impl App {
                 } else if key(none, Key::F) {
                     // „Pilt ekraanile" ↔ „aken pildi järgi (1:1)".
                     self.set_window_fit(if self.cfg.window_fit == WindowFit::ToScreen { WindowFit::ImageSize } else { WindowFit::ToScreen });
-                } else if key(ctrl, Key::O) {
+                } else if key(ctrl, Key::O) || key(none, Key::O) {
+                    // O nagu IrfanView (Shift+O on aknarežiim, ülal).
                     out.open_dialog = true;
+                } else if key(none, Key::M) {
+                    // IrfanView' „boss key".
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 } else if key(none, Key::P) {
                     self.overlay = Some(Overlay::Settings(Box::new(crate::settings::Draft::new(self.cfg.clone()))));
                 } else if !has_item {
@@ -1321,9 +1328,15 @@ impl App {
                     if self.orig_dims().is_some() {
                         self.open_resize();
                     }
-                } else if key(ctrl, Key::S) {
+                } else if key(ctrl, Key::S) || key(none, Key::S) {
+                    // S nagu IrfanView' „Save as".
                     if self.orig_dims().is_some() && self.saving.is_none() {
                         self.open_save();
+                    }
+                } else if key(none, Key::G) {
+                    // Liikuv pilt seisma / edasi.
+                    if let Some(p) = self.current_path() {
+                        self.loader.toggle_pause(&p);
                     }
                 } else if key(ctrl, Key::Z) {
                     if let Some(prev) = self.undo.pop() {
@@ -1344,13 +1357,17 @@ impl App {
                     } else {
                         self.delete_current();
                     }
-                } else if key(none, Key::F4) {
+                } else if key(none, Key::F4) || key(Modifiers::SHIFT, Key::Num1) || key(Modifiers::SHIFT, Key::Exclamationmark) {
+                    // Shift+1 nagu IrfanView („!" on enamikus paigutustes
+                    // Shift+1 loogiline klahv).
                     if in_memory {
                         self.note = Some(save_first.clone());
                     } else {
                         out.edit_file = self.current_path();
                     }
-                } else if key(none, Key::F5) {
+                } else if key(none, Key::F5) || key(Modifiers::SHIFT, Key::R) {
+                    // Shift+R nagu IrfanView („Reopen file"); enne pööret,
+                    // mis võtaks ka Shift+R.
                     // Uuesti kettalt (fail muutus teises programmis).
                     if let Some(p) = self.current_path() {
                         self.loader.forget(&p);
@@ -2129,10 +2146,10 @@ fn hints(ui: &mut egui::Ui, font_size: f32, stage: Rect, zoomed: bool) -> Option
         Entry { keys: &[("R", Modifiers::NONE, Key::R), ("L", Modifiers::NONE, Key::L)], label: "rotate", rank: 1 },
         Entry { keys: &[("H", Modifiers::NONE, Key::H), ("V", Modifiers::NONE, Key::V)], label: "mirror", rank: 1 },
         Entry { keys: &[("Ctrl+R", Modifiers::COMMAND, Key::R)], label: "resize", rank: 1 },
-        Entry { keys: &[("Ctrl+S", Modifiers::COMMAND, Key::S)], label: "save", rank: 1 },
+        Entry { keys: &[("S", Modifiers::NONE, Key::S)], label: "save", rank: 1 },
         Entry { keys: &[("F2", Modifiers::NONE, Key::F2)], label: "rename", rank: 1 },
         Entry { keys: &[("Del", Modifiers::NONE, Key::Delete)], label: "delete", rank: 1 },
-        Entry { keys: &[("Ctrl+O", Modifiers::COMMAND, Key::O)], label: "open", rank: 2 },
+        Entry { keys: &[("O", Modifiers::NONE, Key::O)], label: "open", rank: 2 },
         Entry { keys: &[("P", Modifiers::NONE, Key::P)], label: "settings", rank: 2 },
         Entry { keys: &[("Esc", Modifiers::NONE, Key::Escape)], label: "close", rank: 2 },
     ];

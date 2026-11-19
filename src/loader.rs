@@ -194,6 +194,11 @@ impl Loader {
         Some((p.read.load(std::sync::atomic::Ordering::Relaxed), p.total.load(std::sync::atomic::Ordering::Relaxed)))
     }
 
+    /// Liikuv pilt seisma või edasi (G); `false`: pilt ei liigu.
+    pub fn toggle_pause(&mut self, path: &Path) -> bool {
+        self.animations.get_mut(path).map(crate::animation::Animation::toggle_pause).is_some()
+    }
+
     pub fn get(&self, path: &Path) -> Option<&Ready> {
         self.pinned.get(path).or_else(|| self.cache.get(path).map(|(_, r)| r))
     }
