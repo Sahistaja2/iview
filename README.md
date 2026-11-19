@@ -89,10 +89,10 @@ Every start's stages are logged in `startup.log` next to the settings; with `IVI
 | `Shift+O` | window mode *picture 1:1* |
 | `Shift+W` | window mode off: the window keeps its size, the picture is fitted into it |
 | double-click | fit ↔ 1:1 |
-| left drag | selection box, like IrfanView: drag its edge to resize it; `Ctrl`+drag keeps the ratio (`Shift+C`); click outside it or `Esc` removes it |
+| left drag | selection box. Once there is one, dragging outside it pulls the nearest edge or corner to the pointer and dragging inside moves it, so missing an edge never loses the selection (in IrfanView it does); `Ctrl`+drag keeps the ratio (`Shift+C`); **New** or `Esc` (or `Ctrl`+click) removes it to draw a new one |
 | right drag (or middle) | pan; inside the selection it moves the selection |
 | `Ctrl+Y` | crop to the selection |
-| `Shift+C` | selection ratio: Free, 1:1, 3:2, 4:3, 16:9, 16:10, 21:9 (2.370:1), 2:3, 3:4, 9:16, 10:16 or your own (`w:h`); makes the largest selection of that ratio |
+| `Shift+C` | selection ratio: Free, 1:1, 3:2, 4:3, 16:9, 16:10, 21:9 (2.370:1), 2:3, 3:4, 9:16, 10:16 or your own (`w:h`); `Tab` moves between them, `Enter` or **OK** applies; makes the largest selection of that ratio |
 | `Enter`, `F11` | full screen (text in a corner, template in settings); `Esc` back |
 | `R` `L` | rotate clockwise / counter-clockwise |
 | `H` `V` | mirror horizontally / vertically |

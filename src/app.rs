@@ -89,6 +89,8 @@ struct RatioBox {
     text: String,
     fresh: bool,
     error: Option<String>,
+    /// Tab-iga valitud: kiirvaliku number; `SELECTION_RATIOS.len()` = oma suhe.
+    pick: usize,
 }
 
 struct ResizeBox {
@@ -585,24 +587,36 @@ impl App {
 
     /// Shift+C: suhte kast — kiirvalikud nupud, all oma suhe.
     fn ratio_box(&mut self, ui: &mut egui::Ui, palette: &Palette, font_size: f32, stage: Rect) {
-        let current = self.cfg.sel_ratio.clone();
         let mut picked = None;
         {
             let Some(Overlay::Ratio(r)) = self.overlay.as_mut() else { return };
+            let custom = SELECTION_RATIOS.len();
             let small = FontId::proportional((font_size - 1.5).round());
             let width = (stage.width() - 48.0).min(640.0);
             let field = light_box(ui, palette, stage, Vec2::new(width, 74.0), r.error.is_some());
             let painter = ui.painter().clone();
             let y1 = field.top() + 22.0;
             let title = painter.text(egui::pos2(field.left() + 14.0, y1), Align2::LEFT_CENTER, "Selection ratio", FontId::proportional(font_size), palette.text);
+            // Oma suhe: Tab-iga valitud väljal sinine raam; kirjutamine valib selle.
             let num = Rect::from_min_size(egui::pos2(title.right() + 14.0, y1 - 14.0), Vec2::new(96.0, 28.0));
-            painter.rect(num, CornerRadius::same(3), palette.panel, Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
+            let num_border = if r.pick == custom { Stroke::new(2.0, palette.accent) } else { Stroke::new(1.0, palette.border) };
+            painter.rect(num, CornerRadius::same(3), palette.panel, num_border, egui::StrokeKind::Inside);
             let before = r.text.clone();
             box_edit(ui, palette, num.shrink2(Vec2::new(8.0, 2.0)), egui::Id::new("selection-ratio"), &mut r.text, &mut r.fresh, FontId::proportional(font_size));
             if r.text != before {
                 r.error = None;
+                r.pick = custom;
             }
-            painter.text(egui::pos2(num.right() + 8.0, y1), Align2::LEFT_CENTER, "width : height, empty = free", small.clone(), palette.text_dim);
+            painter.text(egui::pos2(num.right() + 8.0, y1), Align2::LEFT_CENTER, "width : height", small.clone(), palette.text_dim);
+            // OK: sama mis Enter (valitud kiirvalik või oma suhe).
+            let ok_g = painter.layout_no_wrap("OK".to_owned(), small.clone(), palette.text);
+            let ok = Rect::from_min_size(egui::pos2(field.right() - 14.0 - ok_g.size().x - 24.0, y1 - 13.0), Vec2::new(ok_g.size().x + 24.0, 26.0));
+            let ok_resp = ui.interact(ok, egui::Id::new("selection-ratio-ok"), Sense::click());
+            painter.rect(ok, CornerRadius::same(3), if ok_resp.hovered() { palette.accent } else { palette.panel }, Stroke::new(1.0, palette.accent), egui::StrokeKind::Inside);
+            painter.galley(ok.center() - ok_g.size() / 2.0, ok_g, palette.text);
+            if ok_resp.clicked() {
+                picked = Some(SELECTION_RATIOS.get(r.pick).map_or_else(|| r.text.clone(), |(_, v)| (*v).to_owned()));
+            }
             // Kiirvalikud nagu IrfanView' „Create maximized selection".
             let y2 = field.bottom() - 20.0;
             let mut x = field.left() + 14.0;
@@ -613,7 +627,7 @@ impl App {
                     break;
                 }
                 let resp = ui.interact(b, egui::Id::new(("selection-ratio-quick", i)), Sense::click());
-                let fill = if *value == current {
+                let fill = if i == r.pick {
                     palette.accent
                 } else if resp.hovered() {
                     palette.border
@@ -623,14 +637,14 @@ impl App {
                 painter.rect(b, CornerRadius::same(3), fill, Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
                 painter.galley(b.center() - g.size() / 2.0, g, palette.text);
                 if resp.clicked() {
-                    picked = Some(*value);
+                    picked = Some((*value).to_owned());
                 }
                 x = b.right() + 4.0;
             }
-            under_box(ui, palette, font_size, field, r.error.as_deref(), "click a ratio or Enter · Ctrl+drag keeps it · Esc cancel");
+            under_box(ui, palette, font_size, field, r.error.as_deref(), "Tab choose · Enter or OK apply · Ctrl+drag keeps the ratio · Esc cancel");
         }
         if let Some(value) = picked {
-            self.apply_ratio(value);
+            self.apply_ratio(&value);
         }
     }
 
@@ -1370,13 +1384,17 @@ impl App {
                     self.overlay = None;
                 }
             }
-            Some(Overlay::Ratio(_)) => {
-                if key(none, Key::Enter) {
-                    let text = match &self.overlay {
-                        Some(Overlay::Ratio(r)) => r.text.clone(),
-                        _ => String::new(),
-                    };
-                    self.apply_ratio(&text);
+            Some(Overlay::Ratio(r)) => {
+                // Tab / Shift+Tab: kiirvalikud ja oma suhe ringiratast (Shift
+                // enne: `consume_key(NONE, Tab)` võtaks ka Shift+Tab).
+                let count = SELECTION_RATIOS.len() + 1;
+                if key(Modifiers::SHIFT, Key::Tab) {
+                    r.pick = (r.pick + count - 1) % count;
+                } else if key(none, Key::Tab) {
+                    r.pick = (r.pick + 1) % count;
+                } else if key(none, Key::Enter) {
+                    let value = SELECTION_RATIOS.get(r.pick).map_or_else(|| r.text.clone(), |(_, v)| (*v).to_owned());
+                    self.apply_ratio(&value);
                 } else if key(none, Key::Escape) {
                     self.overlay = None;
                 }
@@ -1483,7 +1501,8 @@ impl App {
                     self.crop_to_selection();
                 } else if key(Modifiers::SHIFT, Key::C) {
                     // IrfanView' „Create custom selection": suhe ja suurim valik.
-                    self.overlay = Some(Overlay::Ratio(RatioBox { text: self.cfg.sel_ratio.clone(), fresh: true, error: None }));
+                    let pick = SELECTION_RATIOS.iter().position(|(_, v)| *v == self.cfg.sel_ratio).unwrap_or(SELECTION_RATIOS.len());
+                    self.overlay = Some(Overlay::Ratio(RatioBox { text: self.cfg.sel_ratio.clone(), fresh: true, error: None, pick }));
                 } else if key(ctrl, Key::Z) {
                     if let Some(prev) = self.undo.pop() {
                         self.edit = prev;
@@ -1835,11 +1854,18 @@ impl App {
         let on_screen = self.selection.map(|s| selection_on_screen(s, shown));
         if response.drag_started() {
             let origin = ctx.input(|i| i.pointer.press_origin()).unwrap_or_default();
-            let edges = on_screen.and_then(|r| selection_edges(r, origin));
-            self.sel_drag = Some(match self.selection {
-                Some(sel) if response.drag_started_by(egui::PointerButton::Primary) && edges.is_some() => SelDrag::Edges(edges.unwrap_or_default(), sel),
-                _ if response.drag_started_by(egui::PointerButton::Primary) => SelDrag::New(unit(frac(origin))),
-                Some(sel) if response.drag_started_by(egui::PointerButton::Secondary) && on_screen.is_some_and(|r| r.contains(origin)) => SelDrag::Move(sel, frac(origin)),
+            let primary = response.drag_started_by(egui::PointerButton::Primary);
+            let inside = on_screen.is_some_and(|r| r.contains(origin));
+            // Valik on olemas: vasak nupp ei tee uut valikut (IrfanView's kaob
+            // valik, kui servast mööda vajutad) — väljaspool haarab lähima
+            // serva või nurga, sees nihutab valikut. Uus valik pärast New/Esc.
+            self.sel_drag = Some(match (self.selection, on_screen) {
+                (Some(sel), Some(r)) if primary => match selection_grab(r, origin) {
+                    Some(edges) => SelDrag::Edges(edges, sel),
+                    None => SelDrag::Move(sel, frac(origin)),
+                },
+                _ if primary => SelDrag::New(unit(frac(origin))),
+                (Some(sel), _) if response.drag_started_by(egui::PointerButton::Secondary) && inside => SelDrag::Move(sel, frac(origin)),
                 _ => SelDrag::Pan,
             });
         }
@@ -1889,18 +1915,20 @@ impl App {
             }
         }
         if response.drag_stopped() {
-            self.sel_drag = None;
-            // Alla 3 ekraanipunkti on klõps, mitte valik.
+            // Alla 3 ekraanipunkti: uus valik oli klõps; servaga kokku
+            // tõmmatud valik jääb endiseks (valik ei kao kogemata).
             if self.selection.is_some_and(|s| s.width() * shown.width() < 3.0 || s.height() * shown.height() < 3.0) {
-                self.selection = None;
+                self.selection = match self.sel_drag {
+                    Some(SelDrag::Edges(_, start)) => Some(start),
+                    _ => None,
+                };
             }
+            self.sel_drag = None;
         }
-        if response.clicked() {
-            let ctrl = ctx.input(|i| i.modifiers.command);
-            let inside = response.interact_pointer_pos().is_some_and(|p| on_screen.is_some_and(|r| r.contains(p)));
-            if ctrl || !inside {
-                self.selection = None;
-            }
+        // Klõps valikut ei kustuta (mööda klõpsates ei kao töö); Ctrl+klõps
+        // nagu IrfanView, New ja Esc.
+        if response.clicked() && ctx.input(|i| i.modifiers.command) {
+            self.selection = None;
         }
         if response.double_clicked() {
             if self.zoom.is_some() {
@@ -1920,8 +1948,9 @@ impl App {
                 Some(SelDrag::Move(..)) => CursorIcon::Move,
                 Some(SelDrag::Edges(edges, _)) => edge_cursor(edges),
                 Some(SelDrag::New(_)) => CursorIcon::Crosshair,
-                None => match on_screen.and_then(|r| selection_edges(r, p)) {
-                    Some(edges) => edge_cursor(edges),
+                // Kursor ütleb ette, mida lohistus teeb.
+                None => match on_screen {
+                    Some(r) => selection_grab(r, p).map_or(CursorIcon::Move, edge_cursor),
                     None if shown.contains(p) => CursorIcon::Crosshair,
                     None => CursorIcon::Default,
                 },
@@ -1948,15 +1977,38 @@ impl App {
         }
         painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Outside);
         painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Inside);
+        // Haardepunktid nurkades ja servade keskel (väikesel valikul ainult nurgad).
+        let (cx, cy) = (r.center().x, r.center().y);
+        let mut handles = vec![r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()];
+        if r.width() > 40.0 && r.height() > 40.0 {
+            handles.extend([egui::pos2(cx, r.top()), egui::pos2(r.right(), cy), egui::pos2(cx, r.bottom()), egui::pos2(r.left(), cy)]);
+        }
+        for h in handles {
+            painter.rect(Rect::from_center_size(h, Vec2::splat(7.0)), CornerRadius::ZERO, Color32::WHITE, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Outside);
+        }
 
-        // Riba: mõõt (tulemuse pikslites) ja nupud valiku all, ruumi puudusel üleval.
+        // Mõõt (tulemuse pikslites) valiku sees ülemise serva all vasakul;
+        // madalal valikul serva kohal.
         let small = FontId::proportional((font_size - 1.5).round());
         let size = self.orig_dims().map(|o| self.edit.dims(o)).map(|(w, h)| format!("{} × {}", (sel.width() * w as f32).round(), (sel.height() * h as f32).round())).unwrap_or_default();
         let size_g = painter.layout_no_wrap(size, small.clone(), Color32::WHITE);
-        let buttons = [("Crop", "Ctrl+Y", Modifiers::COMMAND, Key::Y), ("Copy", "Ctrl+C", Modifiers::COMMAND, Key::C), ("Ratio", "Shift+C", Modifiers::SHIFT, Key::C)];
+        let tag_size = size_g.size() + Vec2::new(12.0, 6.0);
+        let tag_top = if r.height() >= tag_size.y + 12.0 { r.top() + 6.0 } else { r.top() - 4.0 - tag_size.y };
+        let tag = Rect::from_min_size(egui::pos2(r.left() + 6.0, tag_top.max(stage.top() + 2.0)), tag_size);
+        painter.rect_filled(tag, CornerRadius::same(3), Color32::from_black_alpha(160));
+        painter.galley(tag.min + Vec2::new(6.0, 3.0), size_g, Color32::WHITE);
+
+        // Nupud valiku all, ruumi puudusel üleval.
+        let buttons = [
+            ("Crop", "Ctrl+Y", Modifiers::COMMAND, Key::Y),
+            ("Copy", "Ctrl+C", Modifiers::COMMAND, Key::C),
+            ("Ratio", "Shift+C", Modifiers::SHIFT, Key::C),
+            // Valik maha: järgmine lohistus joonistab uue.
+            ("New", "Esc", Modifiers::NONE, Key::Escape),
+        ];
         let galleys: Vec<_> = buttons.iter().map(|(label, keys, _, _)|(painter.layout_no_wrap((*label).to_owned(), small.clone(), palette.text), painter.layout_no_wrap((*keys).to_owned(), small.clone(), palette.text_dim))).collect();
         const H: f32 = 24.0;
-        let width = size_g.size().x + 16.0 + galleys.iter().map(|(l, k)| l.size().x + k.size().x + 22.0 + 4.0).sum::<f32>();
+        let width = 4.0 + galleys.iter().map(|(l, k)| l.size().x + k.size().x + 22.0 + 4.0).sum::<f32>();
         let y = if r.bottom() + 6.0 + H <= stage.bottom() - 4.0 {
             r.bottom() + 6.0
         } else if r.top() - 6.0 - H >= stage.top() + 4.0 {
@@ -1967,8 +2019,7 @@ impl App {
         let x = r.left().clamp(stage.left() + 4.0, (stage.right() - 4.0 - width).max(stage.left() + 4.0));
         let band = Rect::from_min_size(egui::pos2(x, y), Vec2::new(width, H));
         painter.rect_filled(band, CornerRadius::same(3), Color32::from_black_alpha(170));
-        painter.galley(egui::pos2(band.left() + 8.0, band.center().y - size_g.size().y / 2.0), size_g.clone(), Color32::WHITE);
-        let mut bx = band.left() + size_g.size().x + 16.0;
+        let mut bx = band.left() + 4.0;
         for (i, ((label, keys), (_, _, mods, key))) in galleys.into_iter().zip(buttons).enumerate() {
             let b = Rect::from_min_size(egui::pos2(bx, band.top() + 2.0), Vec2::new(label.size().x + keys.size().x + 22.0, H - 4.0));
             let resp = ui.interact(b, egui::Id::new(("selection-button", i)), Sense::click());
@@ -2402,18 +2453,17 @@ fn selection_on_screen(sel: Rect, shown: Rect) -> Rect {
     Rect::from_min_max(shown.min + sel.min.to_vec2() * shown.size(), shown.min + sel.max.to_vec2() * shown.size())
 }
 
-/// Valiku servad punkti all (vasak, ülemine, parem, alumine), kui punkt on
-/// mõnest servast kuni 6 punkti kaugusel; lähim serv võidab.
-fn selection_edges(r: Rect, p: Pos2) -> Option<[bool; 4]> {
-    const NEAR: f32 = 6.0;
-    if !r.expand(NEAR).contains(p) {
-        return None;
-    }
+/// Mida vasak lohistus punktist `p` valikuga teeb: servad (vasak, ülemine,
+/// parem, alumine), mis liiguvad kursori juurde — kõikjal väljaspool
+/// valikut ja seest kuni 8 punkti servast (väljas vasakul ülal = nurk);
+/// `None`: valiku sisu, lohistus nihutab valikut.
+fn selection_grab(r: Rect, p: Pos2) -> Option<[bool; 4]> {
+    const NEAR: f32 = 8.0;
     let (dl, dr, dt, db) = ((p.x - r.left()).abs(), (p.x - r.right()).abs(), (p.y - r.top()).abs(), (p.y - r.bottom()).abs());
-    let left = dl <= NEAR && dl <= dr;
-    let right = dr <= NEAR && !left;
-    let top = dt <= NEAR && dt <= db;
-    let bottom = db <= NEAR && !top;
+    let left = p.x <= r.left() + NEAR && dl <= dr;
+    let right = p.x >= r.right() - NEAR && !left;
+    let top = p.y <= r.top() + NEAR && dt <= db;
+    let bottom = p.y >= r.bottom() - NEAR && !top;
     (left || right || top || bottom).then_some([left, top, right, bottom])
 }
 
@@ -2688,6 +2738,20 @@ mod tests {
         let tall = fitted_window_size(WindowFit::ToScreen, Vec2::new(1000.0, 4000.0), padding, available);
         assert_eq!(wide, Vec2::new(1900.0, 563.0));
         assert_eq!(tall, Vec2::new(480.0, 1000.0));
+    }
+
+    /// Valiku haare: servast mööda vajutus väljaspool liigutab lähimat
+    /// serva või nurka (valik ei kao), sees nihutab, serva lähedal sees
+    /// liigutab serva.
+    #[test]
+    fn selection_grab_never_starts_over() {
+        let r = Rect::from_min_max(egui::pos2(100.0, 100.0), egui::pos2(300.0, 200.0));
+        assert_eq!(selection_grab(r, egui::pos2(200.0, 150.0)), None);
+        assert_eq!(selection_grab(r, egui::pos2(90.0, 150.0)), Some([true, false, false, false]));
+        assert_eq!(selection_grab(r, egui::pos2(104.0, 150.0)), Some([true, false, false, false]));
+        assert_eq!(selection_grab(r, egui::pos2(200.0, 400.0)), Some([false, false, false, true]));
+        assert_eq!(selection_grab(r, egui::pos2(20.0, 20.0)), Some([true, true, false, false]));
+        assert_eq!(selection_grab(r, egui::pos2(500.0, 250.0)), Some([false, false, true, true]));
     }
 
     /// Valiku suhe: kirjaviisid, suurim valik keskel, Ctrl+lohistus hoiab
