@@ -223,7 +223,7 @@ fn main() -> eframe::Result<()> {
 
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1100.0, 800.0])
-        .with_min_inner_size([480.0, 360.0])
+        .with_min_inner_size(app::MIN_WINDOW_SIZE)
         .with_title(app::NAME)
         .with_icon(app_icon())
         .with_app_id("iview")

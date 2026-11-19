@@ -27,6 +27,7 @@ use crate::save::{Edit, fit_dims};
 use crate::template;
 
 pub const NAME: &str = "iview";
+pub const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 360.0];
 
 /// Ette lahti pakitavaid pilte liikumise suunas ja tagasi.
 const AHEAD: usize = 4;
@@ -149,6 +150,7 @@ enum Birth {
 #[derive(Default)]
 struct Out {
     close: bool,
+    fit_window: Option<(Vec2, Vec2)>,
     /// Enter: täisekraan sisse / välja.
     fullscreen: Option<bool>,
     /// Kausta lõpus järgmisse (`true`) või eelmisse kausta.
@@ -1037,6 +1039,16 @@ impl eframe::App for App {
                 self.esc_closes = false;
             }
         }
+        if let Some((natural, padding)) = out.fit_window
+            && !self.fullscreen
+            && let Some(window) = self.hwnd
+        {
+            let ppp = ctx.pixels_per_point();
+            crate::platform::resize_to_work_area(window, |available| {
+                let target = fitted_window_size(natural, padding, available / ppp);
+                (target * ppp).ceil()
+            });
+        }
         if let Some(path) = out.edit_file
             && let Err(e) = crate::platform::edit(&path, &self.cfg.editor)
         {
@@ -1237,15 +1249,16 @@ impl App {
                     self.fill = false;
                     self.pan = Vec2::ZERO;
                 } else if key(none, Key::F) {
-                    // Mahutatud → 1:1 → täidetud → mahutatud.
-                    if self.zoom.is_some() {
-                        self.zoom = None;
-                        self.fill = true;
+                    if let Some(natural) = natural {
                         self.pan = Vec2::ZERO;
-                    } else if self.fill {
-                        self.fill = false;
-                    } else {
-                        self.zoom = Some(1.0);
+                        if self.zoom.is_none() && self.fill {
+                            self.zoom = Some(1.0);
+                            self.fill = false;
+                        } else {
+                            self.zoom = None;
+                            self.fill = true;
+                            out.fit_window = Some((natural, ctx.content_rect().size() - area.size()));
+                        }
                     }
                 } else if key(ctrl, Key::O) {
                     out.open_dialog = true;
@@ -1934,6 +1947,11 @@ fn fit_scale(natural: Vec2, area: Vec2, enlarge: bool) -> f32 {
     if enlarge { s } else { s.min(1.0) }
 }
 
+fn fitted_window_size(natural: Vec2, padding: Vec2, available: Vec2) -> Vec2 {
+    let scale = fit_scale(natural, (available - padding).max(Vec2::ZERO), true);
+    (natural * scale + padding).max(Vec2::from(MIN_WINDOW_SIZE)).min(available)
+}
+
 /// Järgmine aste üles või alla praegusest (mis ei pruugi olla astmel);
 /// seade „10 %" / „25 %" korrutab.
 fn zoom_step(current: f32, up: bool, step: ZoomStep) -> f32 {
@@ -2052,7 +2070,7 @@ fn hints(ui: &mut egui::Ui, font_size: f32, stage: Rect, zoomed: bool) -> Option
     let entries = [
         Entry { keys: browse, label: "previous / next", rank: 0 },
         Entry { keys: &[("+", Modifiers::NONE, Key::Plus), ("−", Modifiers::NONE, Key::Minus)], label: "zoom", rank: 0 },
-        Entry { keys: &[("F", Modifiers::NONE, Key::F)], label: "fit / 1:1 / fill", rank: 0 },
+        Entry { keys: &[("F", Modifiers::NONE, Key::F)], label: "fit to screen / 100%", rank: 0 },
         Entry { keys: &[("Enter", Modifiers::NONE, Key::Enter)], label: "full screen", rank: 0 },
         Entry { keys: &[("R", Modifiers::NONE, Key::R), ("L", Modifiers::NONE, Key::L)], label: "rotate", rank: 1 },
         Entry { keys: &[("H", Modifiers::NONE, Key::H), ("V", Modifiers::NONE, Key::V)], label: "mirror", rank: 1 },
@@ -2211,6 +2229,16 @@ pub fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fitted_window_uses_the_limiting_screen_dimension() {
+        let available = Vec2::new(1900.0, 1000.0);
+        let padding = Vec2::new(24.0, 94.0);
+        let wide = fitted_window_size(Vec2::new(4000.0, 1000.0), padding, available);
+        let tall = fitted_window_size(Vec2::new(1000.0, 4000.0), padding, available);
+        assert_eq!(wide, Vec2::new(1900.0, 563.0));
+        assert_eq!(tall, Vec2::new(480.0, 1000.0));
+    }
 
     /// Mahutamine: väiksemaks, mitte suuremaks (seadeta); + − liiguvad
     /// astmeid pidi ka vahepealsest väärtusest, protsendiga korrutades.

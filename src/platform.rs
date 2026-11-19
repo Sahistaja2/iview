@@ -252,6 +252,54 @@ pub fn screen_px(_at: Option<(i32, i32)>) -> Option<(u32, u32)> {
     None
 }
 
+/// Mahutab akna praeguse ekraani tööalasse, arvestades aknaraami.
+#[cfg(windows)]
+pub fn resize_to_work_area(window: isize, client_size: impl FnOnce(eframe::egui::Vec2) -> eframe::egui::Vec2) {
+    use eframe::egui::Vec2;
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+    use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
+    use windows::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GWL_STYLE, GetWindowLongW, IsZoomed, SW_RESTORE, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WS_MAXIMIZE};
+
+    let hwnd = HWND(window as _);
+    // SAFETY: vaaturi aknakäepide ja õigesti algväärtustatud struktuurid.
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return;
+        }
+        let style = WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32 & !WS_MAXIMIZE.0);
+        let ex_style = WINDOW_EX_STYLE(GetWindowLongW(hwnd, GWL_EXSTYLE) as u32);
+        let mut frame = RECT::default();
+        if AdjustWindowRectExForDpi(&mut frame, style, false, ex_style, GetDpiForWindow(hwnd)).is_err() {
+            return;
+        }
+
+        let work = info.rcWork;
+        let work_w = work.right - work.left;
+        let work_h = work.bottom - work.top;
+        let frame_w = frame.right - frame.left;
+        let frame_h = frame.bottom - frame.top;
+        let available = Vec2::new((work_w - frame_w) as f32, (work_h - frame_h) as f32);
+        if available.min_elem() <= 0.0 {
+            return;
+        }
+        let size = client_size(available).min(available);
+        let w = size.x as i32 + frame_w;
+        let h = size.y as i32 + frame_h;
+        if IsZoomed(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+        let x = work.left + (work_w - w) / 2;
+        let y = work.top + (work_h - h) / 2;
+        let _ = SetWindowPos(hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn resize_to_work_area(_window: isize, _client_size: impl FnOnce(eframe::egui::Vec2) -> eframe::egui::Vec2) {}
+
 /// Akna tavaasend (taastatud olekus) füüsilistes pikslites ja kas aken on
 /// maksimeeritud. Punktid ei sobi: eri skaalaga ekraanidel on igal ekraanil
 /// oma punktid ja winit teisendab loomisel põhiekraani skaalaga.

@@ -84,7 +84,7 @@ Every start's stages are logged in `startup.log` next to the settings; with `IVI
 | wheel | previous / next (zoom, depending on settings); `Ctrl`+wheel does the other |
 | `+` `−` | zoom (steps or 10 / 25 %) |
 | `1`, `0` | 1:1, fit |
-| `F` | fit → 1:1 → fill |
+| `F` | toggle between fit to screen and 100% zoom (on Windows, fit to screen also resizes the window to the current monitor's usable area) |
 | double-click, drag | fit ↔ 1:1, pan |
 | `Enter`, `F11` | full screen (text in a corner, template in settings); `Esc` back |
 | `R` `L` | rotate clockwise / counter-clockwise |
