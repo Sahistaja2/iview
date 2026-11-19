@@ -98,6 +98,9 @@ pub struct Config {
     pub enlarge: Enlarge,
     /// Viimati kasutatud pikem külg.
     pub last_long_side: u32,
+    /// Valiku suhe (Shift+C; Ctrl+lohistus hoiab seda): „3:2", „2.370:1";
+    /// tühi = vaba.
+    pub sel_ratio: String,
     // ---- salvestamine ----
     /// Nimemall ilma laiendita; kaust on alati foto oma.
     pub save_template: String,
@@ -162,6 +165,7 @@ impl Default for Config {
             quick_sides: DEFAULT_QUICK_SIDES.to_owned(),
             enlarge: Enlarge::default(),
             last_long_side: 2048,
+            sel_ratio: String::new(),
             save_template: DEFAULT_SAVE_TEMPLATE.to_owned(),
             quality_from_original: true,
             quality: 90,

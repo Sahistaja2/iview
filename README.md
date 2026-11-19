@@ -88,14 +88,18 @@ Every start's stages are logged in `startup.log` next to the settings; with `IVI
 | `Shift+F` | window mode *shrink big to screen*: big pictures fitted to the screen, small ones at 1:1 |
 | `Shift+O` | window mode *picture 1:1* |
 | `Shift+W` | window mode off: the window keeps its size, the picture is fitted into it |
-| double-click, drag | fit ↔ 1:1, pan |
+| double-click | fit ↔ 1:1 |
+| left drag | selection box, like IrfanView: drag its edge to resize it; `Ctrl`+drag keeps the ratio (`Shift+C`); click outside it or `Esc` removes it |
+| right drag (or middle) | pan; inside the selection it moves the selection |
+| `Ctrl+Y` | crop to the selection |
+| `Shift+C` | selection ratio: Free, 1:1, 3:2, 4:3, 16:9, 16:10, 21:9 (2.370:1), 2:3, 3:4, 9:16, 10:16 or your own (`w:h`); makes the largest selection of that ratio |
 | `Enter`, `F11` | full screen (text in a corner, template in settings); `Esc` back |
 | `R` `L` | rotate clockwise / counter-clockwise |
 | `H` `V` | mirror horizontally / vertically |
 | `Ctrl+R` | downsize: longer side (presets, ½); `Ctrl+Enter` applies |
 | `Ctrl+Z` | undo a change |
 | `S` or `Ctrl+S` | save a copy as JPEG (name from template, quality from the original, EXIF and colour profile kept, orientation reset, file time from the original) |
-| `Ctrl+C` | picture to the clipboard as shown; for an unchanged picture also the file itself |
+| `Ctrl+C` | the selection, or the whole picture, to the clipboard as shown; for an unchanged picture without a selection also the file itself |
 | `Ctrl+V` | clipboard picture into the list (in memory only, `Ctrl+S` saves it) |
 | `F2` | rename (sidecar files such as `.xmp` follow) |
 | `Del` | to the Recycle Bin (sidecar files follow) |
@@ -107,7 +111,7 @@ Every start's stages are logged in `startup.log` next to the settings; with `IVI
 | `P` | settings |
 | `Esc` | close |
 
-Changes (rotate, mirror, downsize) live only in the window. The file stays untouched until `Ctrl+S` writes a copy.
+Changes (rotate, mirror, crop, downsize) live only in the window. The file stays untouched until `S` writes a copy.
 
 ## Settings
 

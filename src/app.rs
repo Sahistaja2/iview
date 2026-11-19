@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Modifiers, Rect, Sense, Stroke, Vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, Vec2};
 
 use crate::config::{AtEnd, Background, Config, Enlarge, FullText, OpenView, Transparent, Unsaved, WheelMode, WindowFit, ZoomStep};
 use crate::folder::{self, Item};
@@ -84,6 +84,13 @@ struct Rename {
 }
 
 /// Ctrl+R: pikem külg.
+/// Shift+C: valiku suhe (kiirvalikud või oma „w:h").
+struct RatioBox {
+    text: String,
+    fresh: bool,
+    error: Option<String>,
+}
+
 struct ResizeBox {
     text: String,
     fresh: bool,
@@ -113,6 +120,7 @@ enum Overlay {
     Rename(Rename),
     AskDelete,
     Resize(ResizeBox),
+    Ratio(RatioBox),
     Save(SaveBox),
     AskUnsaved(Pending),
     Settings(Box<crate::settings::Draft>),
@@ -136,6 +144,19 @@ enum ClipDone {
     Copied(Result<(), String>),
     /// Kleebitud pilt ja nimi (kui tuli failist).
     Pasted(Result<(image::DynamicImage, Option<String>), String>),
+}
+
+/// Hiire lohistus pildil (vajutuse hetkel otsustatud).
+#[derive(Clone, Copy)]
+enum SelDrag {
+    /// Parem (või keskmine) nupp väljaspool valikut: pilt liigub.
+    Pan,
+    /// Vasak nupp: uus valik alguspunktist (osad 0..1).
+    New(Pos2),
+    /// Vasak nupp valiku serval: need servad (vasak, ülemine, parem, alumine).
+    Edges([bool; 4], Rect),
+    /// Parem nupp valiku sees: valik liigub (algne valik, alguspunkt).
+    Move(Rect, Pos2),
 }
 
 /// Akna sünd: peidus → nähtav katte all → kate maha.
@@ -193,6 +214,11 @@ pub struct App {
     pan: Vec2,
     edit: Edit,
     undo: Vec<Edit>,
+    /// Valikukast (nagu IrfanView: vasak nupp joonistab): osad 0..1 paistvast
+    /// pildist, nii et suurendus ja nihe seda ei muuda. Ctrl+Y lõikab,
+    /// Ctrl+C kopeerib.
+    selection: Option<Rect>,
+    sel_drag: Option<SelDrag>,
     overlay: Option<Overlay>,
     /// Teade riba paremas servas (viga punaselt, tehtu roheliselt).
     note: Option<(String, bool)>,
@@ -298,6 +324,8 @@ impl App {
             pan: Vec2::ZERO,
             edit: Edit::default(),
             undo: Vec::new(),
+            selection: None,
+            sel_drag: None,
             overlay: None,
             note: None,
             loader,
@@ -367,6 +395,7 @@ impl App {
             }
             self.edit = Edit::default();
             self.undo.clear();
+            self.selection = None;
             self.overlay = None;
             self.note = None;
             self.changed_at = Instant::now();
@@ -475,6 +504,7 @@ impl App {
         }
         self.edit = Edit::default();
         self.undo.clear();
+        self.selection = None;
         self.overlay = None;
         self.note = None;
     }
@@ -516,7 +546,98 @@ impl App {
         }
     }
 
+    /// Ctrl+R alus: pilt pööratult ja lõigatult, enne pikemat külge.
+    fn resize_base(&self) -> Option<(u32, u32)> {
+        self.orig_dims().map(|o| Edit { long_side: None, ..self.edit }.dims(o))
+    }
+
+    /// Ctrl+Y: valik uueks lõikeks (nagu pööre: aknas, S salvestab).
+    fn crop_to_selection(&mut self) {
+        let (Some(sel), Some(orig)) = (self.selection, self.orig_dims()) else {
+            self.note = Some(("Drag on the picture to select an area first".to_string(), true));
+            return;
+        };
+        self.push_undo();
+        self.edit = self.edit.cropped(orig, [sel.min.x, sel.min.y, sel.max.x, sel.max.y]);
+        self.pan = Vec2::ZERO;
+    }
+
+    /// Suhe kastist või kiirvalikust: jääb meelde (Ctrl+lohistus) ja pildile
+    /// tuleb suurim selle suhtega valik keskele; tühi = vaba (kogu pilt).
+    fn apply_ratio(&mut self, text: &str) {
+        let text = text.trim();
+        let ratio = if text.is_empty() {
+            None
+        } else if let Some(r) = parse_ratio(text) {
+            Some(r)
+        } else {
+            if let Some(Overlay::Ratio(r)) = self.overlay.as_mut() {
+                r.error = Some("Enter a ratio like 3:2, 16:9 or 2.37".to_string());
+            }
+            return;
+        };
+        self.cfg.sel_ratio = text.to_owned();
+        if let Some(dims) = self.orig_dims().map(|o| self.edit.dims(o)) {
+            self.selection = Some(maximized_selection(dims, ratio));
+        }
+        self.overlay = None;
+    }
+
+    /// Shift+C: suhte kast — kiirvalikud nupud, all oma suhe.
+    fn ratio_box(&mut self, ui: &mut egui::Ui, palette: &Palette, font_size: f32, stage: Rect) {
+        let current = self.cfg.sel_ratio.clone();
+        let mut picked = None;
+        {
+            let Some(Overlay::Ratio(r)) = self.overlay.as_mut() else { return };
+            let small = FontId::proportional((font_size - 1.5).round());
+            let width = (stage.width() - 48.0).min(640.0);
+            let field = light_box(ui, palette, stage, Vec2::new(width, 74.0), r.error.is_some());
+            let painter = ui.painter().clone();
+            let y1 = field.top() + 22.0;
+            let title = painter.text(egui::pos2(field.left() + 14.0, y1), Align2::LEFT_CENTER, "Selection ratio", FontId::proportional(font_size), palette.text);
+            let num = Rect::from_min_size(egui::pos2(title.right() + 14.0, y1 - 14.0), Vec2::new(96.0, 28.0));
+            painter.rect(num, CornerRadius::same(3), palette.panel, Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
+            let before = r.text.clone();
+            box_edit(ui, palette, num.shrink2(Vec2::new(8.0, 2.0)), egui::Id::new("selection-ratio"), &mut r.text, &mut r.fresh, FontId::proportional(font_size));
+            if r.text != before {
+                r.error = None;
+            }
+            painter.text(egui::pos2(num.right() + 8.0, y1), Align2::LEFT_CENTER, "width : height, empty = free", small.clone(), palette.text_dim);
+            // Kiirvalikud nagu IrfanView' „Create maximized selection".
+            let y2 = field.bottom() - 20.0;
+            let mut x = field.left() + 14.0;
+            for (i, (label, value)) in SELECTION_RATIOS.iter().enumerate() {
+                let g = painter.layout_no_wrap((*label).to_owned(), small.clone(), palette.text);
+                let b = Rect::from_min_size(egui::pos2(x, y2 - 12.0), Vec2::new(g.size().x + 12.0, 24.0));
+                if b.right() > field.right() - 10.0 {
+                    break;
+                }
+                let resp = ui.interact(b, egui::Id::new(("selection-ratio-quick", i)), Sense::click());
+                let fill = if *value == current {
+                    palette.accent
+                } else if resp.hovered() {
+                    palette.border
+                } else {
+                    palette.panel
+                };
+                painter.rect(b, CornerRadius::same(3), fill, Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
+                painter.galley(b.center() - g.size() / 2.0, g, palette.text);
+                if resp.clicked() {
+                    picked = Some(*value);
+                }
+                x = b.right() + 4.0;
+            }
+            under_box(ui, palette, font_size, field, r.error.as_deref(), "click a ratio or Enter · Ctrl+drag keeps it · Esc cancel");
+        }
+        if let Some(value) = picked {
+            self.apply_ratio(value);
+        }
+    }
+
+    /// Muudatus enne uut: Ctrl+Z toob tagasi. Valik käib eelmise pildi
+    /// kohta, see kaob.
     fn push_undo(&mut self) {
+        self.selection = None;
         self.undo.push(self.edit);
         if self.undo.len() > 32 {
             self.undo.remove(0);
@@ -630,7 +751,7 @@ impl App {
     /// Pikem külg kastist: suuremaks ainult hoiatusega (Ctrl+Enter või
     /// nupp) ja mitte üle kahekordse originaali. `force`: „Suurenda ikkagi".
     fn apply_resize(&mut self, force: bool) {
-        let Some(orig) = self.orig_dims() else { return };
+        let Some(orig) = self.resize_base() else { return };
         let orig_side = orig.0.max(orig.1);
         let enlarge = self.cfg.enlarge;
         let Some(Overlay::Resize(r)) = self.overlay.as_mut() else { return };
@@ -787,8 +908,9 @@ impl App {
 
     // ---------- Ctrl+C / Ctrl+V ----------
 
-    /// Ctrl+C: pilt lõikelauale nii, nagu see paistab (pööre, peegel, uus
-    /// mõõt); muutmata failil ka fail ise (Explorerisse kleepides koopia).
+    /// Ctrl+C: pilt lõikelauale nii, nagu see paistab (pööre, peegel, lõige,
+    /// uus mõõt) — valikuga ainult valik; muutmata failil ilma valikuta ka
+    /// fail ise (Explorerisse kleepides koopia).
     fn copy_to_clipboard(&mut self) {
         if self.clip.is_some() {
             return;
@@ -797,11 +919,16 @@ impl App {
         let source = item.path.clone();
         let memory = item.clip.clone();
         let edit = self.edit;
-        let file = (memory.is_none() && edit.is_empty()).then(|| source.clone());
+        let part = self.selection.map(|s| [s.min.x, s.min.y, s.max.x, s.max.y]);
+        let file = (memory.is_none() && edit.is_empty() && part.is_none()).then(|| source.clone());
         let (tx, rx) = mpsc::channel();
         let _ = std::thread::Builder::new().name("copy".into()).spawn(move || {
             let result = (|| {
                 let image = crate::save::edited(&source, memory.as_deref(), edit)?;
+                let image = match part {
+                    Some(part) => crate::save::crop_part(image, part),
+                    None => image,
+                };
                 let rgba = image.to_rgba8();
                 let png = crate::clip_image::to_png(&rgba)?;
                 crate::platform::set_clipboard_image(png, crate::clip_image::to_dib(&rgba), file.as_deref())
@@ -1243,6 +1370,17 @@ impl App {
                     self.overlay = None;
                 }
             }
+            Some(Overlay::Ratio(_)) => {
+                if key(none, Key::Enter) {
+                    let text = match &self.overlay {
+                        Some(Overlay::Ratio(r)) => r.text.clone(),
+                        _ => String::new(),
+                    };
+                    self.apply_ratio(&text);
+                } else if key(none, Key::Escape) {
+                    self.overlay = None;
+                }
+            }
             Some(Overlay::Resize(_)) => {
                 if key(ctrl, Key::Enter) {
                     self.apply_resize(true);
@@ -1273,8 +1411,10 @@ impl App {
             Some(Overlay::Settings(_)) => {}
             None => {
                 if key(none, Key::Escape) {
-                    // Täisekraanilt kõigepealt tagasi, siis kinni.
-                    if self.fullscreen && !self.esc_closes {
+                    // Valik maha, siis täisekraanilt tagasi, siis kinni.
+                    if self.selection.is_some() {
+                        self.selection = None;
+                    } else if self.fullscreen && !self.esc_closes {
                         out.fullscreen = Some(false);
                     } else {
                         self.ask_or(Pending::Close, &mut out);
@@ -1338,9 +1478,16 @@ impl App {
                     if let Some(p) = self.current_path() {
                         self.loader.toggle_pause(&p);
                     }
+                } else if key(ctrl, Key::Y) {
+                    // Nagu IrfanView: valik lõikeks.
+                    self.crop_to_selection();
+                } else if key(Modifiers::SHIFT, Key::C) {
+                    // IrfanView' „Create custom selection": suhe ja suurim valik.
+                    self.overlay = Some(Overlay::Ratio(RatioBox { text: self.cfg.sel_ratio.clone(), fresh: true, error: None }));
                 } else if key(ctrl, Key::Z) {
                     if let Some(prev) = self.undo.pop() {
                         self.edit = prev;
+                        self.selection = None;
                         self.pan = Vec2::ZERO;
                     }
                 } else if copy_now || key(ctrl, Key::C) {
@@ -1456,7 +1603,8 @@ impl App {
         let scale = self.zoom.unwrap_or_else(|| natural.map_or(1.0, |n| fit_scale(n, area.size(), self.cfg.enlarge_small || self.fill)));
         let shown = natural.map(|n| n * scale);
         // Praegune pilt nii teravalt, kui ekraanil vaja (1:1 → täissuurus).
-        let current_side = shown.map_or(screen_side, |s| ((s.max_elem() * ppp).ceil() as u32).clamp(screen_side, SHARP_SIDE));
+        // Lõikega on tekstuur paistvast osast nii mitu korda suurem.
+        let current_side = shown.map_or(screen_side, |s| ((s.max_elem() * ppp * self.edit.crop_magnification()).ceil() as u32).clamp(screen_side, SHARP_SIDE));
         let wanted = self.wanted(current_side, screen_side);
         self.loader.update(ctx, &wanted);
         // Tekstuur võis just saabuda: mõõt ja skaala uuesti, muidu joonistuks
@@ -1517,6 +1665,7 @@ impl App {
                 Some(Overlay::AskUnsaved(_)) => ask_bar(ui, palette, font_size, stage, "The change is not saved — Enter continue without it · Esc stay · Ctrl+S save".to_string()),
                 Some(Overlay::Rename(_)) => self.rename_box(ui, palette, font_size, stage),
                 Some(Overlay::Resize(_)) => self.resize_box(ui, palette, font_size, stage),
+                Some(Overlay::Ratio(_)) => self.ratio_box(ui, palette, font_size, stage),
                 Some(Overlay::Save(_)) => self.save_box(ui, palette, font_size, stage),
                 Some(Overlay::Settings(_)) => {}
                 None if !self.fullscreen && self.cfg.hints => {
@@ -1635,20 +1784,7 @@ impl App {
                 let texture = texture.id();
                 let Some(natural) = self.natural_size(ppp) else { return };
                 let shown_size = natural * scale;
-                if response.dragged() {
-                    self.pan += response.drag_delta();
-                }
-                if response.double_clicked() {
-                    if self.zoom.is_some() {
-                        self.zoom = None;
-                        self.fill = false;
-                        self.pan = Vec2::ZERO;
-                    } else {
-                        let from_center = response.interact_pointer_pos().map_or(Vec2::ZERO, |p| p - area.center());
-                        self.pan = zoom_at(self.pan, from_center, scale, 1.0);
-                        self.zoom = Some(1.0);
-                    }
-                }
+                self.stage_mouse(ui.ctx(), &response, area, shown_size, scale);
                 self.pan = clamp_pan(self.pan, shown_size, area.size());
                 let shown = Rect::from_center_size(area.center() + self.pan, shown_size);
                 let painter = ui.painter().with_clip_rect(stage);
@@ -1656,6 +1792,9 @@ impl App {
                     checkerboard(&painter, shown.intersect(stage));
                 }
                 painter.add(transformed_image(texture, shown, self.edit));
+                if let Some(sel) = self.selection {
+                    self.paint_selection(ui, palette, font_size, stage, shown, sel);
+                }
             }
             Some(Err(reason)) => {
                 let reason = reason.clone();
@@ -1685,6 +1824,165 @@ impl App {
         }
     }
 
+    /// Hiir pildil nagu IrfanView: vasak nupp joonistab valiku (valiku serval
+    /// muudab selle mõõtu), parem (ja keskmine) nupp nihutab pilti, valiku
+    /// sees parem nupp nihutab valikut. Klõps väljaspool valikut või
+    /// Ctrl+klõps võtab valiku maha; topeltklõps vahetab mahutatud ja 1:1.
+    fn stage_mouse(&mut self, ctx: &egui::Context, response: &egui::Response, area: Rect, shown_size: Vec2, scale: f32) {
+        let shown = Rect::from_center_size(area.center() + clamp_pan(self.pan, shown_size, area.size()), shown_size);
+        let frac = |p: Pos2| ((p - shown.min) / shown.size()).to_pos2();
+        let unit = |p: Pos2| p.clamp(Pos2::ZERO, Pos2::new(1.0, 1.0));
+        let on_screen = self.selection.map(|s| selection_on_screen(s, shown));
+        if response.drag_started() {
+            let origin = ctx.input(|i| i.pointer.press_origin()).unwrap_or_default();
+            let edges = on_screen.and_then(|r| selection_edges(r, origin));
+            self.sel_drag = Some(match self.selection {
+                Some(sel) if response.drag_started_by(egui::PointerButton::Primary) && edges.is_some() => SelDrag::Edges(edges.unwrap_or_default(), sel),
+                _ if response.drag_started_by(egui::PointerButton::Primary) => SelDrag::New(unit(frac(origin))),
+                Some(sel) if response.drag_started_by(egui::PointerButton::Secondary) && on_screen.is_some_and(|r| r.contains(origin)) => SelDrag::Move(sel, frac(origin)),
+                _ => SelDrag::Pan,
+            });
+        }
+        if response.dragged()
+            && let Some(drag) = self.sel_drag
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let f = unit(frac(p));
+            // Ctrl nagu IrfanView: uus valik Shift+C suhtega, nurgast
+            // lohistades jääb valiku praegune suhe.
+            let ctrl = ctx.input(|i| i.modifiers.command);
+            let dims = self.orig_dims().map_or((1, 1), |o| self.edit.dims(o));
+            match drag {
+                SelDrag::Pan => self.pan += response.drag_delta(),
+                SelDrag::New(origin) => {
+                    self.selection = Some(match parse_ratio(&self.cfg.sel_ratio).filter(|_| ctrl) {
+                        Some(ratio) => ratio_selection(origin, f, ratio, dims),
+                        None => Rect::from_two_pos(origin, f),
+                    });
+                }
+                SelDrag::Edges([left, top, right, bottom], start) if ctrl && (left || right) && (top || bottom) => {
+                    let anchor = egui::pos2(if left { start.max.x } else { start.min.x }, if top { start.max.y } else { start.min.y });
+                    let ratio = (start.width() * dims.0 as f32) / (start.height() * dims.1 as f32).max(1e-6);
+                    self.selection = Some(ratio_selection(anchor, f, ratio, dims));
+                }
+                SelDrag::Edges([left, top, right, bottom], start) => {
+                    let mut s = start;
+                    if left {
+                        s.min.x = f.x;
+                    }
+                    if right {
+                        s.max.x = f.x;
+                    }
+                    if top {
+                        s.min.y = f.y;
+                    }
+                    if bottom {
+                        s.max.y = f.y;
+                    }
+                    // Serv üle vastasserva: valik pöördub ümber.
+                    self.selection = Some(Rect::from_two_pos(s.min, s.max));
+                }
+                SelDrag::Move(start, origin) => {
+                    let d = (frac(p) - origin).clamp(-start.min.to_vec2(), Vec2::splat(1.0) - start.max.to_vec2());
+                    self.selection = Some(start.translate(d));
+                }
+            }
+        }
+        if response.drag_stopped() {
+            self.sel_drag = None;
+            // Alla 3 ekraanipunkti on klõps, mitte valik.
+            if self.selection.is_some_and(|s| s.width() * shown.width() < 3.0 || s.height() * shown.height() < 3.0) {
+                self.selection = None;
+            }
+        }
+        if response.clicked() {
+            let ctrl = ctx.input(|i| i.modifiers.command);
+            let inside = response.interact_pointer_pos().is_some_and(|p| on_screen.is_some_and(|r| r.contains(p)));
+            if ctrl || !inside {
+                self.selection = None;
+            }
+        }
+        if response.double_clicked() {
+            if self.zoom.is_some() {
+                self.zoom = None;
+                self.fill = false;
+                self.pan = Vec2::ZERO;
+            } else {
+                let from_center = response.interact_pointer_pos().map_or(Vec2::ZERO, |p| p - area.center());
+                self.pan = zoom_at(self.pan, from_center, scale, 1.0);
+                self.zoom = Some(1.0);
+            }
+        }
+        if let Some(p) = response.hover_pos() {
+            use egui::CursorIcon;
+            let icon = match self.sel_drag {
+                Some(SelDrag::Pan) => CursorIcon::Grabbing,
+                Some(SelDrag::Move(..)) => CursorIcon::Move,
+                Some(SelDrag::Edges(edges, _)) => edge_cursor(edges),
+                Some(SelDrag::New(_)) => CursorIcon::Crosshair,
+                None => match on_screen.and_then(|r| selection_edges(r, p)) {
+                    Some(edges) => edge_cursor(edges),
+                    None if shown.contains(p) => CursorIcon::Crosshair,
+                    None => CursorIcon::Default,
+                },
+            };
+            ctx.set_cursor_icon(icon);
+        }
+    }
+
+    /// Valik: väljaspool tumedam, raam; kõrval mõõt pikslites ja nupud
+    /// (klõps teeb sama mis klahv).
+    fn paint_selection(&mut self, ui: &mut egui::Ui, palette: &Palette, font_size: f32, stage: Rect, shown: Rect, sel: Rect) {
+        let painter = ui.painter().with_clip_rect(stage);
+        let r = selection_on_screen(sel, shown);
+        let view = shown.intersect(stage);
+        let shade = Color32::from_black_alpha(120);
+        let around = [
+            Rect::from_min_max(view.min, egui::pos2(view.right(), r.top())),
+            Rect::from_min_max(egui::pos2(view.left(), r.bottom()), view.max),
+            Rect::from_min_max(egui::pos2(view.left(), r.top()), egui::pos2(r.left(), r.bottom())),
+            Rect::from_min_max(egui::pos2(r.right(), r.top()), egui::pos2(view.right(), r.bottom())),
+        ];
+        for part in around.into_iter().map(|p| p.intersect(view)).filter(|p| p.is_positive()) {
+            painter.rect_filled(part, CornerRadius::ZERO, shade);
+        }
+        painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Outside);
+        painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Inside);
+
+        // Riba: mõõt (tulemuse pikslites) ja nupud valiku all, ruumi puudusel üleval.
+        let small = FontId::proportional((font_size - 1.5).round());
+        let size = self.orig_dims().map(|o| self.edit.dims(o)).map(|(w, h)| format!("{} × {}", (sel.width() * w as f32).round(), (sel.height() * h as f32).round())).unwrap_or_default();
+        let size_g = painter.layout_no_wrap(size, small.clone(), Color32::WHITE);
+        let buttons = [("Crop", "Ctrl+Y", Modifiers::COMMAND, Key::Y), ("Copy", "Ctrl+C", Modifiers::COMMAND, Key::C), ("Ratio", "Shift+C", Modifiers::SHIFT, Key::C)];
+        let galleys: Vec<_> = buttons.iter().map(|(label, keys, _, _)|(painter.layout_no_wrap((*label).to_owned(), small.clone(), palette.text), painter.layout_no_wrap((*keys).to_owned(), small.clone(), palette.text_dim))).collect();
+        const H: f32 = 24.0;
+        let width = size_g.size().x + 16.0 + galleys.iter().map(|(l, k)| l.size().x + k.size().x + 22.0 + 4.0).sum::<f32>();
+        let y = if r.bottom() + 6.0 + H <= stage.bottom() - 4.0 {
+            r.bottom() + 6.0
+        } else if r.top() - 6.0 - H >= stage.top() + 4.0 {
+            r.top() - 6.0 - H
+        } else {
+            r.bottom() - 6.0 - H
+        };
+        let x = r.left().clamp(stage.left() + 4.0, (stage.right() - 4.0 - width).max(stage.left() + 4.0));
+        let band = Rect::from_min_size(egui::pos2(x, y), Vec2::new(width, H));
+        painter.rect_filled(band, CornerRadius::same(3), Color32::from_black_alpha(170));
+        painter.galley(egui::pos2(band.left() + 8.0, band.center().y - size_g.size().y / 2.0), size_g.clone(), Color32::WHITE);
+        let mut bx = band.left() + size_g.size().x + 16.0;
+        for (i, ((label, keys), (_, _, mods, key))) in galleys.into_iter().zip(buttons).enumerate() {
+            let b = Rect::from_min_size(egui::pos2(bx, band.top() + 2.0), Vec2::new(label.size().x + keys.size().x + 22.0, H - 4.0));
+            let resp = ui.interact(b, egui::Id::new(("selection-button", i)), Sense::click());
+            painter.rect(b, CornerRadius::same(3), if resp.hovered() { palette.border } else { palette.panel }, Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
+            painter.galley(egui::pos2(b.left() + 8.0, b.center().y - label.size().y / 2.0), label.clone(), palette.text);
+            painter.galley(egui::pos2(b.left() + 14.0 + label.size().x, b.center().y - keys.size().y / 2.0), keys, palette.text_dim);
+            if resp.clicked() {
+                self.pending_key = Some((mods, key));
+                ui.ctx().request_repaint();
+            }
+            bx = b.right() + 4.0;
+        }
+    }
+
     /// F2: nimekast keskel all, laiend hallina, nimi märgitud.
     fn rename_box(&mut self, ui: &mut egui::Ui, palette: &Palette, font_size: f32, stage: Rect) {
         let ext = self.current().map(Item::ext).unwrap_or_default();
@@ -1707,7 +2005,7 @@ impl App {
 
     /// Ctrl+R: pikem külg, kiirvalikud ja ½; → tulemuse mõõt; Enter vähendab.
     fn resize_box(&mut self, ui: &mut egui::Ui, palette: &Palette, font_size: f32, stage: Rect) {
-        let orig = self.orig_dims().unwrap_or((0, 0));
+        let orig = self.resize_base().unwrap_or((0, 0));
         let orig_side = orig.0.max(orig.1);
         let quick = self.cfg.quick_sides();
         let enlarge = self.cfg.enlarge;
@@ -2045,6 +2343,90 @@ fn zoom_step(current: f32, up: bool, step: ZoomStep) -> f32 {
 
 /// Nihe nii, et pilt ei lahkuks alast: alast suurem pilt katab ala,
 /// väiksem on keskel.
+/// Valiku suhted nagu IrfanView' „Create maximized selection": silt ja
+/// väärtus (21:9 on seal 2,370:1). Tühi väärtus = vaba.
+const SELECTION_RATIOS: [(&str, &str); 11] = [
+    ("Free", ""),
+    ("1:1", "1:1"),
+    ("3:2", "3:2"),
+    ("4:3", "4:3"),
+    ("16:9", "16:9"),
+    ("16:10", "16:10"),
+    ("21:9", "2.370:1"),
+    ("2:3", "2:3"),
+    ("3:4", "3:4"),
+    ("9:16", "9:16"),
+    ("10:16", "10:16"),
+];
+
+/// „3:2", „16/9", „2.370:1", „2,37", „4x3" → laius / kõrgus.
+fn parse_ratio(text: &str) -> Option<f32> {
+    let t = text.trim().replace(',', ".");
+    let number = |s: &str| s.trim().parse::<f32>().ok().filter(|n| *n > 0.0);
+    let r = match t.split_once([':', '/', 'x', 'X', '×']) {
+        Some((a, b)) => number(a)? / number(b)?,
+        None => number(&t)?,
+    };
+    (r.is_finite() && (0.05..=20.0).contains(&r)).then_some(r)
+}
+
+/// Suurim valik suhtega `ratio` (laius / kõrgus pikslites) pildi keskel;
+/// `None`: kogu pilt. Osad 0..1.
+fn maximized_selection(dims: (u32, u32), ratio: Option<f32>) -> Rect {
+    let (w, h) = (dims.0.max(1) as f32, dims.1.max(1) as f32);
+    let Some(r) = ratio else { return Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)) };
+    let (sw, sh) = if w / h > r { (h * r, h) } else { (w, w / r) };
+    Rect::from_center_size(egui::pos2(0.5, 0.5), Vec2::new(sw / w, sh / h))
+}
+
+/// Valik punktist `from` kursori `to` suunas suhtega `ratio` (pikslites),
+/// pildi sees (osad 0..1).
+fn ratio_selection(from: Pos2, to: Pos2, ratio: f32, dims: (u32, u32)) -> Rect {
+    let (w, h) = (dims.0.max(1) as f32, dims.1.max(1) as f32);
+    let d = Vec2::new((to.x - from.x) * w, (to.y - from.y) * h);
+    let (mut ax, mut ay) = (d.x.abs(), d.y.abs());
+    if ax / ratio > ay {
+        ay = ax / ratio;
+    } else {
+        ax = ay * ratio;
+    }
+    let (sx, sy) = (if d.x < 0.0 { -1.0 } else { 1.0 }, if d.y < 0.0 { -1.0 } else { 1.0 });
+    let room_x = if sx > 0.0 { (1.0 - from.x) * w } else { from.x * w };
+    let room_y = if sy > 0.0 { (1.0 - from.y) * h } else { from.y * h };
+    let k = (room_x / ax.max(1e-6)).min(room_y / ay.max(1e-6)).min(1.0);
+    Rect::from_two_pos(from, egui::pos2(from.x + sx * ax * k / w, from.y + sy * ay * k / h))
+}
+
+/// Valik (osad 0..1) ekraanile paistva pildi `shown` peal.
+fn selection_on_screen(sel: Rect, shown: Rect) -> Rect {
+    Rect::from_min_max(shown.min + sel.min.to_vec2() * shown.size(), shown.min + sel.max.to_vec2() * shown.size())
+}
+
+/// Valiku servad punkti all (vasak, ülemine, parem, alumine), kui punkt on
+/// mõnest servast kuni 6 punkti kaugusel; lähim serv võidab.
+fn selection_edges(r: Rect, p: Pos2) -> Option<[bool; 4]> {
+    const NEAR: f32 = 6.0;
+    if !r.expand(NEAR).contains(p) {
+        return None;
+    }
+    let (dl, dr, dt, db) = ((p.x - r.left()).abs(), (p.x - r.right()).abs(), (p.y - r.top()).abs(), (p.y - r.bottom()).abs());
+    let left = dl <= NEAR && dl <= dr;
+    let right = dr <= NEAR && !left;
+    let top = dt <= NEAR && dt <= db;
+    let bottom = db <= NEAR && !top;
+    (left || right || top || bottom).then_some([left, top, right, bottom])
+}
+
+fn edge_cursor([left, top, right, bottom]: [bool; 4]) -> egui::CursorIcon {
+    use egui::CursorIcon;
+    match (left || right, top || bottom) {
+        (true, true) if (left && top) || (right && bottom) => CursorIcon::ResizeNwSe,
+        (true, true) => CursorIcon::ResizeNeSw,
+        (true, false) => CursorIcon::ResizeHorizontal,
+        _ => CursorIcon::ResizeVertical,
+    }
+}
+
 fn clamp_pan(pan: Vec2, shown: Vec2, area: Vec2) -> Vec2 {
     let lim = ((shown - area) / 2.0).max(Vec2::ZERO);
     pan.clamp(-lim, lim)
@@ -2112,15 +2494,12 @@ fn checkerboard(painter: &egui::Painter, rect: Rect) {
 /// Pilt ristkülikus muudatusega: ekraani nurk saab tekstuuri nurga
 /// pöörde võrra tagasi ringiga ja peegli korral vastasservalt.
 fn transformed_image(texture: egui::TextureId, rect: Rect, edit: Edit) -> egui::Shape {
-    let uv = [egui::pos2(0.0, 0.0), egui::pos2(1.0, 0.0), egui::pos2(1.0, 1.0), egui::pos2(0.0, 1.0)];
+    let shown = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
     let corners = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
     let mut mesh = egui::Mesh::with_texture(texture);
-    for (i, pos) in corners.into_iter().enumerate() {
-        let mut t = uv[(i + 4 - usize::from(edit.rot % 4)) % 4];
-        if edit.flip_h {
-            t.x = 1.0 - t.x;
-        }
-        mesh.vertices.push(egui::epaint::Vertex { pos, uv: t, color: Color32::WHITE });
+    for (pos, (u, v)) in corners.into_iter().zip(shown) {
+        let (s, t) = edit.source_point(u, v);
+        mesh.vertices.push(egui::epaint::Vertex { pos, uv: egui::pos2(s, t), color: Color32::WHITE });
     }
     mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
     egui::Shape::mesh(mesh)
@@ -2309,6 +2688,31 @@ mod tests {
         let tall = fitted_window_size(WindowFit::ToScreen, Vec2::new(1000.0, 4000.0), padding, available);
         assert_eq!(wide, Vec2::new(1900.0, 563.0));
         assert_eq!(tall, Vec2::new(480.0, 1000.0));
+    }
+
+    /// Valiku suhe: kirjaviisid, suurim valik keskel, Ctrl+lohistus hoiab
+    /// suhet ja jääb pildi sisse.
+    #[test]
+    fn selection_ratios() {
+        assert_eq!(parse_ratio("3:2"), Some(1.5));
+        assert_eq!(parse_ratio(" 16 / 9 "), Some(16.0 / 9.0));
+        assert_eq!(parse_ratio("2,370:1"), Some(2.37));
+        assert_eq!(parse_ratio("4x3"), Some(4.0 / 3.0));
+        assert_eq!(parse_ratio("0:1"), None);
+        assert_eq!(parse_ratio("abc"), None);
+        for (_, value) in SELECTION_RATIOS.iter().filter(|(_, v)| !v.is_empty()) {
+            assert!(parse_ratio(value).is_some(), "{value}");
+        }
+        let px = |r: Rect, (w, h): (u32, u32)| (r.width() * w as f32, r.height() * h as f32);
+        let wide = maximized_selection((800, 600), Some(16.0 / 9.0));
+        let (w, h) = px(wide, (800, 600));
+        assert!((w - 800.0).abs() < 0.01 && (h - 450.0).abs() < 0.01 && (wide.center().y - 0.5).abs() < 1e-6);
+        let tall = px(maximized_selection((800, 600), Some(2.0 / 3.0)), (800, 600));
+        assert!((tall.0 - 400.0).abs() < 0.01 && (tall.1 - 600.0).abs() < 0.01);
+        // Lohistus 1:1 suhtega alt paremalt: piiriks ülemine serv.
+        let r = ratio_selection(egui::pos2(0.75, 0.5), egui::pos2(0.0, 0.0), 1.0, (800, 600));
+        let (w, h) = px(r, (800, 600));
+        assert!((w - h).abs() < 0.01 && (h - 300.0).abs() < 0.01 && r.min.y.abs() < 1e-6);
     }
 
     /// Aknarežiimid nagu IrfanView: ekraanile (väike suuremaks), ainult suur
