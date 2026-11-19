@@ -91,6 +91,7 @@ Every start's stages are logged in `startup.log` next to the settings; with `IVI
 | double-click | fit ↔ 1:1 |
 | left drag | selection box. Once there is one, dragging outside it pulls the nearest edge or corner to the pointer and dragging inside moves it, so missing an edge never loses the selection (in IrfanView it does); `Ctrl`+drag keeps the ratio (`Shift+C`); **New** or `Esc` (or `Ctrl`+click) removes it to draw a new one |
 | right drag (or middle) | pan; inside the selection it moves the selection |
+| `←` `→` `↑` `↓` | move an active selection one image pixel at a time |
 | `Ctrl+Y` | crop to the selection |
 | `Shift+C` | selection ratio: Free, 1:1, 3:2, 4:3, 16:9, 16:10, 21:9 (2.370:1), 2:3, 3:4, 9:16, 10:16 or your own (`w:h`); `Tab` moves between them, `Enter` or **OK** applies; makes the largest selection of that ratio |
 | `Enter`, `F11` | full screen (text in a corner, template in settings); `Esc` back |
@@ -100,7 +101,7 @@ Every start's stages are logged in `startup.log` next to the settings; with `IVI
 | `Ctrl+Z` | undo a change |
 | `S` or `Ctrl+S` | save a copy as JPEG (name from template, quality from the original, EXIF and colour profile kept, orientation reset, file time from the original) |
 | `Ctrl+C` | the selection, or the whole picture, to the clipboard as shown; for an unchanged picture without a selection also the file itself |
-| `Ctrl+V` | clipboard picture into the list (in memory only, `Ctrl+S` saves it) |
+| `Ctrl+V` | paste the clipboard picture into the selection, scaled to fill it, or add it to the list when there is no selection. `Ctrl+S` saves the result |
 | `F2` | rename (sidecar files such as `.xmp` follow) |
 | `Del` | to the Recycle Bin (sidecar files follow) |
 | `F4` or `Shift+1` | editor (setting; empty = the Windows “Edit” action) |
