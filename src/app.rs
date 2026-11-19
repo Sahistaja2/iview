@@ -139,13 +139,20 @@ struct ExifInfo {
 }
 
 /// Salvestamise tulemus taustalõimest.
-type Saved = Result<(PathBuf, u64), String>;
+type Saved = Result<(PathBuf, u64, PathBuf, u64), String>;
+
+#[derive(Clone)]
+struct PastedSelection {
+    image: Arc<image::DynamicImage>,
+    texture: egui::TextureHandle,
+}
 
 /// Lõikelaua töö tulemus taustalõimest (Ctrl+C / Ctrl+V).
 enum ClipDone {
     Copied(Result<(), String>),
     /// Kleebitud pilt ja nimi (kui tuli failist).
     Pasted(Result<(image::DynamicImage, Option<String>), String>),
+    PastedSelection { source: PathBuf, revision: u64, result: Result<(image::DynamicImage, egui::ColorImage), String> },
 }
 
 /// Hiire lohistus pildil (vajutuse hetkel otsustatud).
@@ -215,7 +222,9 @@ pub struct App {
     /// Pildi keskpunkti nihe ala keskpunktist (punktides).
     pan: Vec2,
     edit: Edit,
-    undo: Vec<Edit>,
+    pasted_selection: Option<PastedSelection>,
+    edit_revision: u64,
+    undo: Vec<(Edit, Option<PastedSelection>)>,
     /// Valikukast (nagu IrfanView: vasak nupp joonistab): osad 0..1 paistvast
     /// pildist, nii et suurendus ja nihe seda ei muuda. Ctrl+Y lõikab,
     /// Ctrl+C kopeerib.
@@ -325,6 +334,8 @@ impl App {
             fill,
             pan: Vec2::ZERO,
             edit: Edit::default(),
+            pasted_selection: None,
+            edit_revision: 0,
             undo: Vec::new(),
             selection: None,
             sel_drag: None,
@@ -395,9 +406,7 @@ impl App {
             if self.zoom.is_some_and(|z| z != 1.0) {
                 self.zoom = None;
             }
-            self.edit = Edit::default();
-            self.undo.clear();
-            self.selection = None;
+            self.reset_edits();
             self.overlay = None;
             self.note = None;
             self.changed_at = Instant::now();
@@ -433,7 +442,7 @@ impl App {
     }
 
     fn ask_or(&mut self, target: Pending, out: &mut Out) {
-        if !self.edit.is_empty() && self.cfg.unsaved == Unsaved::Ask {
+        if self.has_edits() && self.cfg.unsaved == Unsaved::Ask {
             self.overlay = Some(Overlay::AskUnsaved(target));
             return;
         }
@@ -504,9 +513,7 @@ impl App {
         if self.zoom.is_some_and(|z| z != 1.0) {
             self.zoom = None;
         }
-        self.edit = Edit::default();
-        self.undo.clear();
-        self.selection = None;
+        self.reset_edits();
         self.overlay = None;
         self.note = None;
     }
@@ -538,6 +545,9 @@ impl App {
 
     /// Originaali mõõdud nagu failis (pööre arvestatud), kui pilt on loetud.
     fn orig_dims(&self) -> Option<(u32, u32)> {
+        if let Some(pasted) = &self.pasted_selection {
+            return Some((pasted.image.width(), pasted.image.height()));
+        }
         let path = &self.current()?.path;
         match self.loader.get(path) {
             Some(Ok((texture, dims))) => Some(dims.unwrap_or_else(|| {
@@ -648,11 +658,29 @@ impl App {
         }
     }
 
+    fn has_edits(&self) -> bool {
+        self.pasted_selection.is_some() || !self.edit.is_empty()
+    }
+
+    fn working_image(&self, item: &Item) -> Option<Arc<image::DynamicImage>> {
+        self.pasted_selection.as_ref().map(|pasted| pasted.image.clone()).or_else(|| item.clip.clone())
+    }
+
+    fn reset_edits(&mut self) {
+        self.edit = Edit::default();
+        self.pasted_selection = None;
+        self.undo.clear();
+        self.selection = None;
+        self.sel_drag = None;
+        self.edit_revision += 1;
+    }
+
     /// Muudatus enne uut: Ctrl+Z toob tagasi. Valik käib eelmise pildi
     /// kohta, see kaob.
     fn push_undo(&mut self) {
         self.selection = None;
-        self.undo.push(self.edit);
+        self.undo.push((self.edit, self.pasted_selection.clone()));
+        self.edit_revision += 1;
         if self.undo.len() > 32 {
             self.undo.remove(0);
         }
@@ -748,8 +776,7 @@ impl App {
         self.items.remove(self.cursor);
         self.overlay = None;
         self.pan = Vec2::ZERO;
-        self.edit = Edit::default();
-        self.undo.clear();
+        self.reset_edits();
         if !self.items.is_empty() {
             self.cursor = self.cursor.min(self.items.len() - 1);
         }
@@ -857,9 +884,10 @@ impl App {
         let source = item.path.clone();
         let dir = source.parent().map(Path::to_path_buf).unwrap_or_else(|| self.dir.clone());
         let modified = item.modified;
-        let memory = item.clip.clone();
+        let memory = self.working_image(item);
         let edit = self.edit;
-        let keep_exif = self.cfg.keep_exif;
+        let revision = self.edit_revision;
+        let keep_exif = self.cfg.keep_exif && item.clip.is_none();
         let Some(Overlay::Save(s)) = self.overlay.as_mut() else { return };
         let name = s.name.trim().trim_end_matches(".jpg").trim_end_matches(".JPG").to_owned();
         if let Some(why) = template::invalid_name(&name) {
@@ -881,7 +909,7 @@ impl App {
         }
         let (tx, rx) = mpsc::channel();
         let _ = std::thread::Builder::new().name("save".into()).spawn(move || {
-            let result = crate::save::save_copy(&source, memory.as_deref(), &output, edit, quality, keep_exif, modified).map(|bytes| (output, bytes));
+            let result = crate::save::save_copy(&source, memory.as_deref(), &output, edit, quality, keep_exif, modified).map(|bytes| (output, bytes, source, revision));
             let _ = tx.send(result);
         });
         self.saving = Some(rx);
@@ -896,21 +924,20 @@ impl App {
         let Some(result) = self.saving.as_ref().and_then(|rx| rx.try_recv().ok()) else { return };
         self.saving = None;
         match result {
-            Ok((path, bytes)) => {
+            Ok((path, bytes, source, revision)) => {
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 // Kleebitud pilt sai failiks: mälus olev kirje asendub.
-                if self.current().is_some_and(|i| i.clip.is_some()) {
+                if self.edit_revision == revision && self.current().is_some_and(|i| i.path == source && i.clip.is_some()) {
                     let old = self.items[self.cursor].path.clone();
                     self.loader.unpin(&old);
                     self.items[self.cursor] = Item::file(path);
-                    self.edit = Edit::default();
-                    self.undo.clear();
+                    self.reset_edits();
                     self.note = Some((format!("saved → {name} · {}", format_size(bytes)), false));
                     return;
                 }
                 let at = (self.cursor + 1).min(self.items.len());
                 self.items.insert(at, Item::file(path));
-                if self.cfg.goto_saved {
+                if self.cfg.goto_saved && self.edit_revision == revision && self.current().is_some_and(|item| item.path == source) {
                     self.set_cursor(at);
                 } else {
                     self.note = Some((format!("saved → {name} · {}", format_size(bytes)), false));
@@ -931,7 +958,7 @@ impl App {
         }
         let Some(item) = self.current() else { return };
         let source = item.path.clone();
-        let memory = item.clip.clone();
+        let memory = self.working_image(item);
         let edit = self.edit;
         let part = self.selection.map(|s| [s.min.x, s.min.y, s.max.x, s.max.y]);
         let file = (memory.is_none() && edit.is_empty() && part.is_none()).then(|| source.clone());
@@ -953,8 +980,7 @@ impl App {
         self.note = Some(("copying…".to_string(), false));
     }
 
-    /// Ctrl+V: lõikelaua pilt (või esimene pildifail) loendisse praeguse
-    /// järele, ainult mälus. Ctrl+S salvestab selle selle kausta.
+    /// Ctrl+V: lõikelaua pilt valikusse või uue pildina loendisse.
     fn paste_from_clipboard(&mut self) {
         if self.clip.is_some() {
             return;
@@ -971,16 +997,35 @@ impl App {
             self.note = Some(("No picture on the clipboard".to_string(), true));
             return;
         };
+        let target = self.selection.zip(self.current()).map(|(sel, item)| {
+            let part = [sel.min.x, sel.min.y, sel.max.x, sel.max.y];
+            (item.path.clone(), self.working_image(item), self.edit, self.edit_revision, part)
+        });
         let (tx, rx) = mpsc::channel();
-        let _ = std::thread::Builder::new().name("paste".into()).spawn(move || {
+        let worker = std::thread::Builder::new().name("paste".into()).spawn(move || {
             let result = match from {
                 From::Image(crate::platform::ClipboardImage::Png(bytes)) => image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).map_err(|e| e.to_string()).map(|i| (i, None)),
                 From::Image(crate::platform::ClipboardImage::Dib(bytes)) => crate::clip_image::from_dib(&bytes).map(|i| (i, None)),
                 From::File(path) => crate::decode::decode_full(&path, u32::MAX).map(|i| (i, path.file_stem().map(|n| n.to_string_lossy().into_owned()))),
             };
-            let _ = tx.send(ClipDone::Pasted(result));
+            let done = match target {
+                Some((source, memory, edit, revision, part)) => {
+                    let result = result.and_then(|(pasted, _)| {
+                        let image = crate::save::edited(&source, memory.as_deref(), edit)?;
+                        let image = crate::save::paste_part(image, pasted, part);
+                        let preview = crate::loader::memory_preview(&image);
+                        Ok((image, preview))
+                    });
+                    ClipDone::PastedSelection { source, revision, result }
+                }
+                None => ClipDone::Pasted(result),
+            };
+            let _ = tx.send(done);
         });
-        self.clip = Some(rx);
+        match worker {
+            Ok(_) => self.clip = Some(rx),
+            Err(e) => self.note = Some((e.to_string(), true)),
+        }
     }
 
     /// Lõikelaua töö valmis.
@@ -998,6 +1043,23 @@ impl App {
                 self.items.insert(at, Item { path, size: 0, modified: None, clip: Some(Arc::new(image)) });
                 self.go(Some(at), true, out);
                 self.note = Some(("pasted from the clipboard".to_string(), false));
+            }
+            ClipDone::PastedSelection { source, revision, result } => {
+                if self.edit_revision != revision || self.current().is_none_or(|item| item.path != source) {
+                    return;
+                }
+                match result {
+                    Ok((image, preview)) => {
+                        let texture = ctx.load_texture(format!("paste:{}", source.display()), preview, egui::TextureOptions::LINEAR);
+                        let selection = self.selection;
+                        self.push_undo();
+                        self.selection = selection;
+                        self.edit = Edit::default();
+                        self.pasted_selection = Some(PastedSelection { image: Arc::new(image), texture });
+                        self.note = Some(("pasted into the selection".to_string(), false));
+                    }
+                    Err(e) => self.note = Some((e, true)),
+                }
             }
         }
     }
@@ -1362,11 +1424,24 @@ impl App {
             let shown = n * shown_scale;
             shown.x > area.width() + 0.5 || shown.y > area.height() + 0.5
         });
-        // Alast suurem pilt (nagu IrfanView): nooled nihutavad pilti noole
-        // suunas seni, kuni klahv all; pilti vahetavad siis PgUp/PgDn,
-        // tühik, Home/End. Aknasse mahtuval pildil vahetavad nooled pilti.
-        if self.overlay.is_none() && overflows {
-            self.pan += arrow_pan(ctx);
+        if self.overlay.is_none() {
+            if let Some(selection) = self.selection {
+                let pixels = ctx.input_mut(|i| {
+                    let mut pixels = Vec2::ZERO;
+                    for (key, direction) in ARROWS {
+                        pixels += direction * i.count_and_consume_key(Modifiers::NONE, key) as f32;
+                    }
+                    pixels
+                });
+                if pixels != Vec2::ZERO && let Some(orig) = self.orig_dims() {
+                    let (w, h) = self.edit.dims(orig);
+                    let delta = pixels / Vec2::new(w.max(1) as f32, h.max(1) as f32);
+                    self.selection = Some(translate_selection(selection, delta));
+                }
+            } else if overflows {
+                // Alast suuremat pilti nooled nihutavad, mahtuvat pilti vahetavad.
+                self.pan += arrow_pan(ctx);
+            }
         }
 
         match self.overlay.as_mut() {
@@ -1504,10 +1579,13 @@ impl App {
                     let pick = SELECTION_RATIOS.iter().position(|(_, v)| *v == self.cfg.sel_ratio).unwrap_or(SELECTION_RATIOS.len());
                     self.overlay = Some(Overlay::Ratio(RatioBox { text: self.cfg.sel_ratio.clone(), fresh: true, error: None, pick }));
                 } else if key(ctrl, Key::Z) {
-                    if let Some(prev) = self.undo.pop() {
+                    if let Some((prev, pasted)) = self.undo.pop() {
                         self.edit = prev;
+                        self.pasted_selection = pasted;
+                        self.edit_revision += 1;
                         self.selection = None;
                         self.pan = Vec2::ZERO;
+                        self.note = None;
                     }
                 } else if copy_now || key(ctrl, Key::C) {
                     self.copy_to_clipboard();
@@ -1536,6 +1614,12 @@ impl App {
                     // mis võtaks ka Shift+R.
                     // Uuesti kettalt (fail muutus teises programmis).
                     if let Some(p) = self.current_path() {
+                        if self.pasted_selection.is_some() {
+                            self.reset_edits();
+                            self.note = None;
+                        } else {
+                            self.edit_revision += 1;
+                        }
                         self.loader.forget(&p);
                         self.exif.remove(&p);
                         self.exif_asked.remove(&p);
@@ -1544,7 +1628,7 @@ impl App {
             }
         }
         // Ctrl+V ka tühjas aknas.
-        if self.overlay.is_none() && (paste_now || (!has_item && key(ctrl, Key::V))) {
+        if self.overlay.is_none() && (paste_now || (!shift && key(ctrl, Key::V))) {
             self.paste_from_clipboard();
         }
         // Pööre ja peegel: eraldi, sest `consume_key` tarbib ühe korraga.
@@ -1688,7 +1772,7 @@ impl App {
                 Some(Overlay::Save(_)) => self.save_box(ui, palette, font_size, stage),
                 Some(Overlay::Settings(_)) => {}
                 None if !self.fullscreen && self.cfg.hints => {
-                    if let Some(key) = hints(ui, font_size, stage, self.zoom.is_some()) {
+                    if let Some(key) = hints(ui, font_size, stage, self.zoom.is_some() || self.selection.is_some()) {
                         self.pending_key = Some(key);
                         ctx.request_repaint();
                     }
@@ -1776,8 +1860,11 @@ impl App {
         if let Some(m) = modified {
             parts.push((chrono::DateTime::<chrono::Local>::from(m).format("%Y-%m-%d %H:%M").to_string(), dim));
         }
-        if !self.edit.is_empty() {
+        if self.has_edits() {
             let mut desc = self.edit.describe();
+            if self.pasted_selection.is_some() {
+                desc.insert(0, "pasted into selection".to_string());
+            }
             desc.push("not saved · Ctrl+S".to_string());
             parts.push((desc.join(" · "), yellow));
         }
@@ -1798,9 +1885,12 @@ impl App {
         let ppp = ui.ctx().pixels_per_point();
         let Some(item) = self.current() else { return };
         let (path, item_size) = (item.path.clone(), item.size);
-        match self.loader.get(&path) {
-            Some(Ok((texture, _))) => {
-                let texture = texture.id();
+        let ready = match &self.pasted_selection {
+            Some(pasted) => Some(Ok(pasted.texture.id())),
+            None => self.loader.get(&path).map(|ready| ready.as_ref().map(|(texture, _)| texture.id())),
+        };
+        match ready {
+            Some(Ok(texture)) => {
                 let Some(natural) = self.natural_size(ppp) else { return };
                 let shown_size = natural * scale;
                 self.stage_mouse(ui.ctx(), &response, area, shown_size, scale);
@@ -1909,8 +1999,7 @@ impl App {
                     self.selection = Some(Rect::from_two_pos(s.min, s.max));
                 }
                 SelDrag::Move(start, origin) => {
-                    let d = (frac(p) - origin).clamp(-start.min.to_vec2(), Vec2::splat(1.0) - start.max.to_vec2());
-                    self.selection = Some(start.translate(d));
+                    self.selection = Some(translate_selection(start, frac(p) - origin));
                 }
             }
         }
@@ -2002,6 +2091,7 @@ impl App {
         let buttons = [
             ("Crop", "Ctrl+Y", Modifiers::COMMAND, Key::Y),
             ("Copy", "Ctrl+C", Modifiers::COMMAND, Key::C),
+            ("Paste", "Ctrl+V", Modifiers::COMMAND, Key::V),
             ("Ratio", "Shift+C", Modifiers::SHIFT, Key::C),
             // Valik maha: järgmine lohistus joonistab uue.
             ("New", "Esc", Modifiers::NONE, Key::Escape),
@@ -2453,6 +2543,10 @@ fn selection_on_screen(sel: Rect, shown: Rect) -> Rect {
     Rect::from_min_max(shown.min + sel.min.to_vec2() * shown.size(), shown.min + sel.max.to_vec2() * shown.size())
 }
 
+fn translate_selection(selection: Rect, delta: Vec2) -> Rect {
+    selection.translate(delta.clamp(-selection.min.to_vec2(), Vec2::splat(1.0) - selection.max.to_vec2()))
+}
+
 /// Mida vasak lohistus punktist `p` valikuga teeb: servad (vasak, ülemine,
 /// parem, alumine), mis liiguvad kursori juurde — kõikjal väljaspool
 /// valikut ja seest kuni 8 punkti servast (väljas vasakul ülal = nurk);
@@ -2482,15 +2576,21 @@ fn clamp_pan(pan: Vec2, shown: Vec2, area: Vec2) -> Vec2 {
     pan.clamp(-lim, lim)
 }
 
+const ARROWS: [(Key, Vec2); 4] = [
+    (Key::ArrowLeft, Vec2::new(-1.0, 0.0)),
+    (Key::ArrowRight, Vec2::new(1.0, 0.0)),
+    (Key::ArrowUp, Vec2::new(0.0, -1.0)),
+    (Key::ArrowDown, Vec2::new(0.0, 1.0)),
+];
+
 /// Allhoitud noolte nihe selles kaadris: vaade liigub noole suunas nagu
 /// kerides; noolevajutused tarbitakse, et pilti ei vahetataks.
 fn arrow_pan(ctx: &egui::Context) -> Vec2 {
     const SPEED: f32 = 900.0;
-    let arrows = [(Key::ArrowLeft, Vec2::new(-1.0, 0.0)), (Key::ArrowRight, Vec2::new(1.0, 0.0)), (Key::ArrowUp, Vec2::new(0.0, -1.0)), (Key::ArrowDown, Vec2::new(0.0, 1.0))];
     let (dir, dt) = ctx.input_mut(|i| {
         let mut dir = Vec2::ZERO;
-        for (k, d) in arrows {
-            while i.consume_key(Modifiers::NONE, k) {}
+        for (k, d) in ARROWS {
+            i.consume_key(Modifiers::NONE, k);
             if i.key_down(k) && i.modifiers.is_none() {
                 dir += d;
             }
@@ -2558,15 +2658,15 @@ fn transformed_image(texture: egui::TextureId, rect: Rect, edit: Edit) -> egui::
 /// Klahvirida pildi all: iga käsk oma kastis (klahvimärk + silt), ühes
 /// reas. Kui kõik ei mahu: sildid ära; siis vähemtähtsad kastid tähtsuse
 /// järjekorras. Kast on nupp: klõps teeb sama mis klahv.
-fn hints(ui: &mut egui::Ui, font_size: f32, stage: Rect, zoomed: bool) -> Option<(Modifiers, Key)> {
+fn hints(ui: &mut egui::Ui, font_size: f32, stage: Rect, arrows_in_use: bool) -> Option<(Modifiers, Key)> {
     struct Entry {
         keys: &'static [(&'static str, Modifiers, Key)],
         label: &'static str,
         rank: u8,
     }
-    // Suurendatult nooled nihutavad pilti; pildivahetus on siis PgUp/PgDn.
+    // Nooled on nihutamiseks, kui pilt on suurendatud või valik on aktiivne.
     let browse: &'static [(&'static str, Modifiers, Key)] =
-        if zoomed { &[("PgUp", Modifiers::NONE, Key::PageUp), ("PgDn", Modifiers::NONE, Key::PageDown)] } else { &[("←", Modifiers::NONE, Key::ArrowLeft), ("→", Modifiers::NONE, Key::ArrowRight)] };
+        if arrows_in_use { &[("PgUp", Modifiers::NONE, Key::PageUp), ("PgDn", Modifiers::NONE, Key::PageDown)] } else { &[("←", Modifiers::NONE, Key::ArrowLeft), ("→", Modifiers::NONE, Key::ArrowRight)] };
     let entries = [
         Entry { keys: browse, label: "previous / next", rank: 0 },
         Entry { keys: &[("+", Modifiers::NONE, Key::Plus), ("−", Modifiers::NONE, Key::Minus)], label: "zoom", rank: 0 },
@@ -2752,6 +2852,16 @@ mod tests {
         assert_eq!(selection_grab(r, egui::pos2(200.0, 400.0)), Some([false, false, false, true]));
         assert_eq!(selection_grab(r, egui::pos2(20.0, 20.0)), Some([true, true, false, false]));
         assert_eq!(selection_grab(r, egui::pos2(500.0, 250.0)), Some([false, false, true, true]));
+    }
+
+    #[test]
+    fn moving_selection_preserves_size_at_image_edges() {
+        let selection = Rect::from_min_max(egui::pos2(0.25, 0.25), egui::pos2(0.75, 0.75));
+        let moved = translate_selection(selection, Vec2::new(1.0 / 128.0, -1.0 / 64.0));
+        assert_eq!(moved.min, egui::pos2(33.0 / 128.0, 15.0 / 64.0));
+        assert_eq!(moved.size(), selection.size());
+        let at_edge = translate_selection(moved, Vec2::new(1.0, -1.0));
+        assert_eq!(at_edge, Rect::from_min_max(egui::pos2(0.5, 0.0), egui::pos2(1.0, 0.5)));
     }
 
     /// Valiku suhe: kirjaviisid, suurim valik keskel, Ctrl+lohistus hoiab

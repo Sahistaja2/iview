@@ -190,6 +190,15 @@ pub fn crop_part(image: image::DynamicImage, part: [f32; 4]) -> image::DynamicIm
     image.crop_imm(crop.x, crop.y, crop.w, crop.h)
 }
 
+pub fn paste_part(image: image::DynamicImage, pasted: image::DynamicImage, part: [f32; 4]) -> image::DynamicImage {
+    let dims = (image.width(), image.height());
+    let crop = Edit::default().cropped(dims, part).crop.expect("cropped sets the bounds");
+    let pasted = pasted.resize_exact(crop.w, crop.h, image::imageops::FilterType::Lanczos3).into_rgba8();
+    let mut rgba = image.into_rgba8();
+    image::imageops::overlay(&mut rgba, &pasted, i64::from(crop.x), i64::from(crop.y));
+    image::DynamicImage::ImageRgba8(rgba)
+}
+
 /// Pikem külg `side` kasti, proportsioon jääb (ka suuremaks, kui küsitakse).
 pub fn fit_dims((w, h): (u32, u32), side: u32) -> (u32, u32) {
     if w == 0 || h == 0 {
@@ -222,7 +231,7 @@ pub fn edited(source: &Path, memory: Option<&image::DynamicImage>, edit: Edit) -
 pub fn save_copy(source: &Path, memory: Option<&image::DynamicImage>, output: &Path, edit: Edit, quality: u8, keep_exif: bool, modified: Option<SystemTime>) -> Result<u64, String> {
     let image = edited(source, memory, edit)?;
     let rgb = image.into_rgb8();
-    let (exif, icc) = if keep_exif && memory.is_none() { jpeg_metadata(source) } else { (None, None) };
+    let (exif, icc) = if keep_exif { jpeg_metadata(source) } else { (None, None) };
     write_jpeg(&rgb, output, quality, exif, icc, modified)
 }
 
@@ -414,6 +423,20 @@ mod tests {
         let part = crop_part(numbered(), [0.2, 1.0 / 3.0, 0.6, 1.0]).to_rgb8();
         assert_eq!(part.dimensions(), (2, 2));
         assert_eq!(part.get_pixel(0, 0).0[0], 6);
+    }
+
+    #[test]
+    fn paste_scales_to_selection_without_changing_outside_pixels() {
+        let base = image::Rgba([24, 48, 120, 255]);
+        let patch = image::Rgba([200, 150, 100, 255]);
+        let image = image::RgbaImage::from_pixel(8, 4, base).into();
+        let pasted = image::RgbaImage::from_pixel(1, 1, patch).into();
+        let out = paste_part(image, pasted, [0.25, 0.25, 0.75, 0.75]).into_rgba8();
+        assert_eq!(out.dimensions(), (8, 4));
+        for (x, y, pixel) in out.enumerate_pixels() {
+            let expected = if (2..6).contains(&x) && (1..3).contains(&y) { patch } else { base };
+            assert_eq!(*pixel, expected, "pixel at ({x}, {y})");
+        }
     }
 
     /// Koopia: pööratud ja vähendatud, aeg originaalilt, `.part` faili ei jää.

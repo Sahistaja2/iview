@@ -213,16 +213,7 @@ impl Loader {
     /// külg kuni `MAX_PINNED`; algmõõt jääb pildi mahutamiseks.
     pub fn pin(&mut self, ctx: &egui::Context, path: PathBuf, image: &image::DynamicImage) {
         let dims = (image.width(), image.height());
-        let small;
-        let shown = if dims.0.max(dims.1) > MAX_PINNED {
-            small = image.resize(MAX_PINNED, MAX_PINNED, image::imageops::FilterType::Triangle);
-            &small
-        } else {
-            image
-        };
-        let rgba = shown.to_rgba8();
-        let color = egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw());
-        let texture = ctx.load_texture(format!("pilt:{}", path.display()), color, egui::TextureOptions::LINEAR);
+        let texture = ctx.load_texture(format!("pilt:{}", path.display()), memory_preview(image), egui::TextureOptions::LINEAR);
         self.pinned.insert(path, Ok((texture, Some(dims))));
     }
 
@@ -254,6 +245,15 @@ impl Drop for Loader {
 
 /// Mälus oleva pildi tekstuuri pikem külg (`Loader::pin`).
 const MAX_PINNED: u32 = 4096;
+
+pub fn memory_preview(image: &image::DynamicImage) -> egui::ColorImage {
+    let rgba = if image.width().max(image.height()) > MAX_PINNED {
+        image.resize(MAX_PINNED, MAX_PINNED, image::imageops::FilterType::Triangle).into_rgba8()
+    } else {
+        image.to_rgba8()
+    };
+    egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw())
+}
 
 /// Naaber, mille võib võtta, kui praegune pilt on veel töös: väike fail.
 const SMALL_NEIGHBOUR: u64 = 32 * 1024 * 1024;
